@@ -1,4 +1,4 @@
-# Python-generated files
+# Go-only repository
 .DS_Store
 __pycache__/
 *.py[oc]
@@ -8,41 +8,27 @@ wheels/
 *.egg-info
 web_dist
 node_modules/
-# Virtual environments
 .venv
 .idea
+
 data
 config.json
 config.local*.json
 edit
-
 docker-compose-local.yml
 
 .claude/settings.local.json
 
-# Environment variables
-.env
-.env.local
-
-# Database files
 *.db
 *.sqlite
 *.sqlite3
-
-# Git cache
-git_cache/
-
-# 调试/测试输出目录
-.codex/run-logs/
-.playwright-mcp/
-/logs/
 *.log
 /runtime/
-services/checkout_protocol/proxy_state.json
-services/checkout_protocol/dumps/
-loginwithpassword_*/
-logwithemailverifycode_*/
-test_batch_output/
+/logs/
+
+.codex/run-logs/
+.playwright-mcp/
+git_cache/
 
 # Local deployment archives, binaries, caches, and copied source snapshots
 *.tar.gz
@@ -54,17 +40,12 @@ test_batch_output/
 go-current-code/
 artifacts/
 
-# 本地实验/生成物
+# Local experiments and generated output
 skills/
 standalone/
 test/
 tests/
 docs/*.md
-!docs/BEGINNER_LOCAL_SETUP.md
-!docs/BEGINNER_UBUNTU_SETUP.md
-!docs/AUTO_UPLOAD_SUB2API_CPA.md
-!docs/TROUBLESHOOTING_LOG_EXAMPLES.md
 scripts/test_*.py
 scripts/probe_*.py
 scripts/pix_browser_capture.py
-/web/

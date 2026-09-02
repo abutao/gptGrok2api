@@ -85,10 +85,10 @@ function promptApiBaseCandidates(): string[] {
 
   if (import.meta.env.DEV && typeof window !== 'undefined') {
     const { protocol, hostname, port } = window.location
-    if (!configured && port && port !== '8000') {
-      bases.push(`${protocol}//${hostname}:8000`)
-      if (hostname === 'localhost') bases.push(`${protocol}//127.0.0.1:8000`)
-      if (hostname === '127.0.0.1') bases.push(`${protocol}//localhost:8000`)
+    if (!configured && port && port !== '3000') {
+      bases.push(`${protocol}//${hostname}:3000`)
+      if (hostname === 'localhost') bases.push(`${protocol}//127.0.0.1:3000`)
+      if (hostname === '127.0.0.1') bases.push(`${protocol}//localhost:3000`)
     }
   }
 

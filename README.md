@@ -34,8 +34,8 @@ docker network inspect gptgrok2api_default >/dev/null 2>&1 || docker network cre
 ~~~dotenv
 CHATGPT2API_AUTH_KEY=change-this-api-key
 CHATGPT2API_ADMIN_KEY=change-this-admin-key
-CHATGPT2API_GO_PORT=8000
-GO_PUBLIC_BASE_URL=http://your-server-ip:8000
+CHATGPT2API_GO_PORT=3000
+GO_PUBLIC_BASE_URL=http://your-server-ip:3000
 GO_VERSION=1.2.1-go
 ~~~
 
@@ -44,7 +44,7 @@ GO_VERSION=1.2.1-go
 ~~~bash
 docker compose -f docker-compose.go.yml up -d --build
 docker compose -f docker-compose.go.yml ps
-curl -fsS http://127.0.0.1:8000/health
+curl -fsS http://127.0.0.1:3000/health
 ~~~
 
 Compose 包含 Go API、Redis 和图片网关。主 API 端口由 `CHATGPT2API_GO_PORT` 映射，图片网关默认只监听本机 3001。
@@ -60,14 +60,14 @@ docker compose -f docker-compose.go.yml logs -f image-gateway
 
 ~~~bash
 export API_KEY='your-api-key'
-curl http://127.0.0.1:8000/v1/models \
+curl http://127.0.0.1:3000/v1/models \
   -H "Authorization: Bearer $API_KEY"
 ~~~
 
 文本聊天：
 
 ~~~bash
-curl http://127.0.0.1:8000/v1/chat/completions \
+curl http://127.0.0.1:3000/v1/chat/completions \
   -H "Authorization: Bearer $API_KEY" \
   -H 'Content-Type: application/json' \
   -d '{"model":"gpt-5","messages":[{"role":"user","content":"你好"}]}'
@@ -78,7 +78,7 @@ curl http://127.0.0.1:8000/v1/chat/completions \
 `gpt-image-2` 可通过 `/v1/chat/completions` 调用。纯文本提示词直接使用字符串；只有 `image_url`、`input_image` 或 `image` 内容块会进行图片/Base64 解析。
 
 ~~~bash
-curl http://127.0.0.1:8000/v1/chat/completions \
+curl http://127.0.0.1:3000/v1/chat/completions \
   -H "Authorization: Bearer $API_KEY" \
   -H 'Content-Type: application/json' \
   -d '{"model":"gpt-image-2","messages":[{"role":"user","content":"画一个蓝色方块"}]}'
@@ -87,7 +87,7 @@ curl http://127.0.0.1:8000/v1/chat/completions \
 返回图片链接形如：
 
 ~~~text
-http://your-server:8000/v1/files/image?id=<image-id>
+http://your-server:3000/v1/files/image?id=<image-id>
 ~~~
 
 该链接由 Go 服务直接提供下载，不依赖上游临时链接。
@@ -97,7 +97,7 @@ Go 版会同时识别 ChatGPT 图片流程返回的 `file-service://` 和 `sedim
 ### 图片生成和编辑
 
 ~~~bash
-curl http://127.0.0.1:8000/v1/images/generations \
+curl http://127.0.0.1:3000/v1/images/generations \
   -H "Authorization: Bearer $API_KEY" \
   -H 'Content-Type: application/json' \
   -d '{"model":"gpt-image-2","prompt":"画一只猫","size":"1024x1024"}'
@@ -106,7 +106,7 @@ curl http://127.0.0.1:8000/v1/images/generations \
 图片编辑必须使用 `multipart/form-data`：
 
 ~~~bash
-curl http://127.0.0.1:8000/v1/images/edits \
+curl http://127.0.0.1:3000/v1/images/edits \
   -H "Authorization: Bearer $API_KEY" \
   -F 'model=gpt-image-2' \
   -F 'prompt=把背景改成蓝色' \
@@ -195,7 +195,7 @@ curl http://127.0.0.1:8000/v1/images/edits \
 
 完整示例见 `.env.example` 和 `config.example.yaml`。
 
-## 服务器 8000 端口
+## 服务器 3000 端口
 
 ~~~bash
 git clone https://github.com/lichao199208/gptGrok2api.git /opt/gpt2api-go
@@ -203,7 +203,7 @@ cd /opt/gpt2api-go
 cp .env.example .env
 docker network inspect gptgrok2api_default >/dev/null 2>&1 || docker network create gptgrok2api_default
 docker compose -f docker-compose.go.yml up -d --build
-curl -fsS http://127.0.0.1:8000/health
+curl -fsS http://127.0.0.1:3000/health
 ~~~
 
 服务器配置示例：
@@ -211,7 +211,7 @@ curl -fsS http://127.0.0.1:8000/health
 ~~~dotenv
 CHATGPT2API_AUTH_KEY=replace-with-a-long-random-key
 CHATGPT2API_ADMIN_KEY=replace-with-a-different-admin-key
-CHATGPT2API_GO_PORT=8000
+CHATGPT2API_GO_PORT=3000
 GO_PUBLIC_BASE_URL=https://gpt.qkmss.com
 GO_VERSION=1.2.1-go
 ~~~

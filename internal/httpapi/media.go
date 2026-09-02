@@ -210,7 +210,7 @@ func (s *Server) generateOpenAIImageData(r *http.Request, ctx context.Context, p
 			for attempt := 0; attempt <= s.cfg.ChatMaxRetries; attempt++ {
 				accountStarted := time.Now()
 				s.stageRequestMonitor(r, "image_egress_waiting", 30, map[string]any{"egress_wait_ms": 0})
-				lease, reserveErr := s.accountPool.ReserveMatchingLimit(ctx, []string{"basic", "super", "heavy"}, excluded, isOpenAIAccount, s.cfg.ImageAccountLimit)
+				lease, reserveErr := s.reserveOpenAIAccount(ctx, []string{"basic", "super", "heavy"}, excluded, s.cfg.ImageAccountLimit)
 				if reserveErr != nil {
 					sendErr(reserveErr)
 					cancel()
@@ -221,8 +221,8 @@ func (s *Server) generateOpenAIImageData(r *http.Request, ctx context.Context, p
 
 				generated, generateErr := s.openAIImage.Generate(ctx, lease.Account, prompt, model, size, quality, inputs)
 				if generateErr != nil {
-					s.accountPool.Release(lease)
 					s.accountPool.Feedback(lease.Account, upstreamStatus(generateErr), generateErr)
+					s.accountPool.Release(lease)
 					excluded[lease.Account.Token] = true
 					if s.shouldRetry(upstreamStatus(generateErr), attempt) {
 						continue
@@ -232,6 +232,16 @@ func (s *Server) generateOpenAIImageData(r *http.Request, ctx context.Context, p
 					return
 				}
 
+				// OpenAI has consumed image quota once generation completes, even if
+				// our subsequent local download/resolve step cannot return the file.
+				// Do not release this lease or return an image until that consumption
+				// has been durably saved; otherwise a crash/restart can reuse it.
+				if consumeErr := s.accountPool.RecordImageConsumption(lease.Account); consumeErr != nil {
+					s.accountPool.Release(lease)
+					sendErr(fmt.Errorf("persist consumed image quota: %w", consumeErr))
+					cancel()
+					return
+				}
 				items := make([]map[string]string, 0, len(generated))
 				var resolveErr error
 				for _, image := range generated {
@@ -248,8 +258,8 @@ func (s *Server) generateOpenAIImageData(r *http.Request, ctx context.Context, p
 					break
 				}
 				if resolveErr != nil {
-					s.accountPool.Release(lease)
 					s.accountPool.Feedback(lease.Account, upstreamStatus(resolveErr), resolveErr)
+					s.accountPool.Release(lease)
 					excluded[lease.Account.Token] = true
 					if s.shouldRetry(upstreamStatus(resolveErr), attempt) {
 						continue
@@ -258,9 +268,9 @@ func (s *Server) generateOpenAIImageData(r *http.Request, ctx context.Context, p
 					cancel()
 					return
 				}
+				s.accountPool.FeedbackImageSuccess(lease.Account)
 				s.accountPool.Release(lease)
 				s.stageRequestMonitor(r, "image_response_ready", 95, map[string]any{"response_ms": time.Since(accountStarted).Milliseconds()})
-				s.accountPool.Feedback(lease.Account, http.StatusOK, nil)
 				results[index] = items
 				return
 			}

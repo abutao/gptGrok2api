@@ -256,6 +256,73 @@ func TestDashboardRouteDisablesCaching(t *testing.T) {
 	}
 }
 
+func TestRunImageTaskRecordsRealtimeMonitorAndCallLog(t *testing.T) {
+	root := t.TempDir()
+	server := New(adminTestConfig(root))
+	task := &imageTaskState{
+		ID:     "task-monitor-regression",
+		Status: "queued",
+		Mode:   "generate",
+		Model:  "__monitor_invalid_model__",
+		Prompt: "monitor regression",
+		N:      1,
+		Size:   "1024x1024",
+	}
+
+	server.runImageTask(task, "Bearer admin-secret", "")
+
+	if task.Status != "error" {
+		t.Fatalf("expected task error, got %q (%s)", task.Status, task.Error)
+	}
+	record, ok := server.monitor.detail(task.ID)
+	if !ok {
+		t.Fatal("async image task was not recorded by realtime monitor")
+	}
+	if record.Endpoint != "/v1/images/generations" || record.Status != "failed" {
+		t.Fatalf("unexpected async monitor record: %#v", record)
+	}
+	if record.Error == "" || record.Duration < 0 {
+		t.Fatalf("monitor failure details missing: %#v", record)
+	}
+
+	snapshot := server.monitorSnapshotWithHistory()
+	summary := mapValue(snapshot["summary"])
+	if intValue(summary["completed"]) != 1 || intValue(summary["failed"]) != 1 {
+		t.Fatalf("async task missing from realtime summary: %#v", summary)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(server.cfg.DataDir, "logs.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), task.ID) {
+		t.Fatalf("async task was not persisted to call log: %s", raw)
+	}
+}
+
+func TestRunImageTaskUsesEditEndpointForAsyncEdits(t *testing.T) {
+	root := t.TempDir()
+	server := New(adminTestConfig(root))
+	task := &imageTaskState{
+		ID:         "task-edit-monitor-regression",
+		Status:     "queued",
+		Mode:       "edit",
+		Model:      "__monitor_invalid_model__",
+		Prompt:     "edit monitor regression",
+		N:          1,
+		Size:       "1024x1024",
+		Images:     [][]byte{[]byte("not-a-real-image")},
+		ImageNames: []string{"input.png"},
+	}
+
+	server.runImageTask(task, "Bearer admin-secret", "")
+
+	record, ok := server.monitor.detail(task.ID)
+	if !ok || record.Endpoint != "/v1/images/edits" || record.Status != "failed" {
+		t.Fatalf("unexpected async edit monitor record: %#v %v", record, ok)
+	}
+}
+
 func TestRequestMonitorWritesMultipartCallLog(t *testing.T) {
 	root := t.TempDir()
 	cfg := adminTestConfig(root)

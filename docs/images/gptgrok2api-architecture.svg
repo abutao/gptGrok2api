@@ -44,7 +44,7 @@
 
   <!-- Main gateway -->
   <rect x="60" y="300" width="1010" height="250" class="boundary" fill="#eef6ff" stroke="#a9c9f6" />
-  <text x="85" y="330" class="boundary-label">GPTGrok2API 主网关（FastAPI）</text>
+  <text x="85" y="330" class="boundary-label">GPTGrok2API 主网关（Go）</text>
   <rect x="95" y="365" width="260" height="105" class="node" fill="#ffffff" stroke="#91b8ee" />
   <text x="225" y="397" text-anchor="middle" class="node-title">认证与模型路由</text>
   <text x="225" y="422" text-anchor="middle" class="node-text">Bearer 身份认证</text>

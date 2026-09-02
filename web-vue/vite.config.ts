@@ -2,7 +2,7 @@
 import vue from '@vitejs/plugin-vue'
 import path from 'path'
 
-const proxyTarget = process.env.VITE_DEV_API_TARGET || 'http://localhost:8000'
+const proxyTarget = process.env.VITE_DEV_API_TARGET || 'http://localhost:3000'
 
 // https://vite.dev/config/
 export default defineConfig({

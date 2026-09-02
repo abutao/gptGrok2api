@@ -154,7 +154,6 @@ quota_limits:
   video_daily_limit: -1
 
 runtime_capacity:
-  uvicorn_workers: 4
   text_concurrency_limit: 120
   image_concurrency_limit: 24
   request_queue_timeout_seconds: 2

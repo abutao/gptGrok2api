@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set +e
-BASE="http://127.0.0.1:3010"
+BASE="http://127.0.0.1:3000"
 API="test-api-key"
 ADMIN="test-admin-key"
 
@@ -46,7 +46,7 @@ call POST /api/settings/retention-cleanup/run "$ADMIN" '{}'
 call POST /v1/search "$API" '{"prompt":"test"}'
 
 echo "PORTS"
-for port in 3000 3001 3002 3010; do
+for port in 3000 3001; do
   code=$(curl -sS --max-time 5 -o /dev/null -w "%{http_code}" "http://127.0.0.1:$port/health")
   echo "$port $code"
 done

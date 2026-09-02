@@ -315,6 +315,42 @@ func TestAccountAutoRemoveInvalidRequiresDefinitiveExpiredToken(t *testing.T) {
 	}
 }
 
+func TestAccountStatusCategoryTreatsKnownExhaustedQuotaAsLimited(t *testing.T) {
+	tests := []struct {
+		name string
+		item map[string]any
+		want string
+	}{
+		{
+			name: "zero quota",
+			item: map[string]any{"status": "正常", "quota": 0, "image_quota_unknown": false},
+			want: "limited",
+		},
+		{
+			name: "negative quota",
+			item: map[string]any{"status": "正常", "quota": -21, "image_quota_unknown": false},
+			want: "limited",
+		},
+		{
+			name: "unknown quota remains normal",
+			item: map[string]any{"status": "正常", "quota": 0, "image_quota_unknown": true},
+			want: "normal",
+		},
+		{
+			name: "missing quota remains normal",
+			item: map[string]any{"status": "正常", "image_quota_unknown": false},
+			want: "normal",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := accountStatusCategory(test.item); got != test.want {
+				t.Fatalf("accountStatusCategory() = %q, want %q: %#v", got, test.want, test.item)
+			}
+		})
+	}
+}
+
 func TestAccountStatusCategoryDoesNotTreatTransientMarkersAsAbnormal(t *testing.T) {
 	account := map[string]any{
 		"status": "正常", "quota": 7, "last_error_kind": "upstream_error",

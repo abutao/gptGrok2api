@@ -73,6 +73,8 @@ type Server struct {
 	external           *externalManager
 	refreshMu          sync.RWMutex
 	refreshProgress    map[string]*accountRefreshProgress
+	tokenRefreshMu     sync.Mutex
+	tokenRefreshes     map[string]*accessTokenRefreshCall
 	survivalMu         sync.RWMutex
 	survivalStatus     map[string]any
 	survivalRunning    bool
@@ -123,6 +125,7 @@ func New(cfg config.Config) *Server {
 		schedulerLeases:    map[string]map[string]any{},
 		external:           newExternalManager(cfg.DataDir),
 		refreshProgress:    map[string]*accountRefreshProgress{},
+		tokenRefreshes:     map[string]*accessTokenRefreshCall{},
 		survivalStatus:     map[string]any{"running": false, "last_started_at": "", "last_finished_at": "", "last_error": "", "last_summary": map[string]any{}, "next_run_at": ""},
 		survivalWake:       make(chan struct{}, 1),
 		probeStop:          make(chan struct{}),
@@ -2034,6 +2037,15 @@ func accountStatusCategory(account map[string]any) string {
 	}
 	if status == "limited" || status == "rate_limited" || status == "cooling" || status == "backoff" || status == "限流" {
 		return "limited"
+	}
+	// A confirmed exhausted image quota is a limited state. Runtime updates
+	// normally set status to "限流" at zero, but imported/legacy records or
+	// later status updates can otherwise leave zero/negative quota as "正常".
+	// Explicitly unknown or absent quota must not be inferred as exhausted.
+	if !boolValue(account["image_quota_unknown"], false) {
+		if quota, ok := account["quota"]; ok && quota != nil && intValue(quota) <= 0 {
+			return "limited"
+		}
 	}
 	switch reason {
 	case "pro_cooldown", "video_cooldown", "lane_backoff", "lane_degraded", "image_generation_unavailable", "image_quota_exhausted", "text_pending":

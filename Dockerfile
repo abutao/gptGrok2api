@@ -6,6 +6,7 @@ RUN npm ci
 COPY VERSION /src/VERSION
 COPY CHANGELOG.md /src/CHANGELOG.md
 COPY web-vue ./
+# Keep the TypeScript project configuration explicit in deployment builds.
 COPY web-vue/tsconfig.json /src/web-vue/tsconfig.json
 RUN npm run build
 
@@ -24,7 +25,7 @@ COPY --from=go-build /gptgrok2api /app/gptgrok2api
 COPY --from=web-build /src/web-vue/dist /app/web_dist
 COPY VERSION CHANGELOG.md config.example.yaml ./
 COPY services/default_prompt_library.json /app/services/default_prompt_library.json
-RUN mkdir -p /app/data /app/logs && chown -R app:app /app
+RUN mkdir -p /app/data && chown -R app:app /app
 USER app
 ENV GO_LISTEN_ADDR=:80 \
     GO_STATIC_DIR=/app/web_dist \

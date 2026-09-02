@@ -142,7 +142,6 @@ export interface Settings {
     video_daily_limit: number
   }
   runtime_capacity: {
-    uvicorn_workers: number
     text_concurrency_limit: number
     image_concurrency_limit: number
     request_queue_timeout_seconds: number
@@ -206,7 +205,6 @@ export interface SettingsUpdateResponse {
   restart_required?: boolean
   config?: Settings
   runtime_capacity?: {
-    uvicorn_workers: number
     text_concurrency_limit: number
     image_concurrency_limit: number
     request_queue_timeout_seconds: number
