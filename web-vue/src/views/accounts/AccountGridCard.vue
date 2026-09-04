@@ -33,6 +33,11 @@
         :label="accountSourceText(item)"
         tone-class="border-cyan-500/40 bg-cyan-500/10 text-cyan-600"
       />
+      <StatusPill
+        :label="accountDispatchText(item)"
+        :tone-class="`${accountDispatchToneClass(item)} border-border`"
+        title="图片调度状态"
+      />
       <button
         type="button"
         class="text-left"
@@ -78,6 +83,8 @@ import AccountActionButtons from '@/components/ai/AccountActionButtons.vue'
 import type { Account } from '@/api/accounts'
 import {
   accountDetailItems,
+  accountDispatchText,
+  accountDispatchToneClass,
   accountPrimaryText,
   accountRowSignature,
   accountSecondaryText,

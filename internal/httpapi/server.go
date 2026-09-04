@@ -1405,6 +1405,7 @@ func (s *Server) listAccounts(w http.ResponseWriter, r *http.Request) {
 	keyword := strings.ToLower(strings.TrimSpace(query.Get("keyword")))
 	status := strings.ToLower(strings.TrimSpace(query.Get("status")))
 	groupID := strings.TrimSpace(query.Get("group_id"))
+	runtime, _ := s.accountPool.RuntimeSnapshot([]string{"basic", "super", "heavy"}, true, s.cfg.ImageAccountLimit)
 	filtered := make([]map[string]any, 0, len(items))
 	for _, item := range items {
 		// The OpenAI account page must not expose Grok SSO credentials.
@@ -1422,7 +1423,11 @@ func (s *Server) listAccounts(w http.ResponseWriter, r *http.Request) {
 		if !accountGroupMatches(item, groupID) {
 			continue
 		}
-		filtered = append(filtered, accountForAPI(item))
+		apiItem := accountForAPI(item)
+		if state, ok := runtime[accountToken(item)]; ok {
+			mergeAccountRuntimeState(apiItem, state)
+		}
+		filtered = append(filtered, apiItem)
 	}
 	start := (page - 1) * pageSize
 	if start > len(filtered) {
@@ -1440,6 +1445,17 @@ func (s *Server) listAccounts(w http.ResponseWriter, r *http.Request) {
 		"page":      page,
 		"page_size": pageSize,
 	})
+}
+
+func mergeAccountRuntimeState(account map[string]any, state accounts.RuntimeAccountState) {
+	account["image_inflight"] = state.ImageInflight
+	account["available"] = state.Available
+	account["dispatchable"] = state.Dispatchable
+	account["dispatch_reason_code"] = state.ReasonCode
+	account["dispatch_reason"] = state.Reason
+	if !state.LastUsedAt.IsZero() {
+		account["last_used_at"] = state.LastUsedAt.UTC().Format(time.RFC3339)
+	}
 }
 
 func (s *Server) addAccounts(w http.ResponseWriter, r *http.Request) {
@@ -2067,9 +2083,12 @@ func accountStatusCategory(account map[string]any) string {
 	// A confirmed exhausted image quota is a limited state. Runtime updates
 	// normally set status to "限流" at zero, but imported/legacy records or
 	// later status updates can otherwise leave zero/negative quota as "正常".
-	// Explicitly unknown or absent quota must not be inferred as exhausted.
+	// A plain zero quota is only a hint and must remain eligible for the
+	// request-time remote confirmation. Explicitly unknown or absent quota must
+	// not be inferred as exhausted.
 	if !boolValue(account["image_quota_unknown"], false) {
-		if quota, ok := account["quota"]; ok && quota != nil && intValue(quota) <= 0 {
+		if quota, ok := account["quota"]; ok && quota != nil && intValue(quota) <= 0 &&
+			(remoteStatus == "limited" || remoteStatus == "quota_exhausted" || reason == "image_quota_exhausted" || reason == "quota_exhausted") {
 			return "limited"
 		}
 	}

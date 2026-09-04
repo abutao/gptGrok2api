@@ -133,6 +133,11 @@ export function accountRowSignature(item: Account): string {
     item.image_quota_unknown ? 1 : 0,
     item.success_count || 0,
     item.failure_count || 0,
+    item.image_inflight || 0,
+    item.available === false ? 0 : 1,
+    item.dispatchable === false ? 0 : 1,
+    item.dispatch_reason_code,
+    item.dispatch_reason,
     item.enabled ? 1 : 0,
     item.is_demo ? 1 : 0,
   ].map(signatureValue).join('|')
@@ -606,6 +611,19 @@ export function accountQuotaText(item: Account): string {
   return `${Math.max(0, Number(item.quota || 0))}`
 }
 
+export function accountDispatchText(item: Account): string {
+  const inflight = Math.max(0, Number(item.image_inflight || 0))
+  const reason = cleanString(item.dispatch_reason)
+  if (item.dispatchable === false) {
+    return reason ? `${reason} · 在途 ${inflight}` : `不可调度 · 在途 ${inflight}`
+  }
+  return `可调度 · 在途 ${inflight}`
+}
+
+export function accountDispatchToneClass(item: Account): string {
+  return item.dispatchable === false ? PILL_TONE_CLASS.warning : PILL_TONE_CLASS.success
+}
+
 export function accountCreatedText(item: Account): string {
   return formatAccountDate(item.created_at)
 }
@@ -741,6 +759,7 @@ export function accountDetailItems(item: Account) {
     { label: '恢复时间', value: accountRestoreText(item) },
     { label: '图片额度', value: accountQuotaText(item) },
     { label: '成功 / 失败', value: `${item.success_count || 0} / ${item.failure_count || 0}` },
+    { label: '图片调度', value: accountDispatchText(item) },
     { label: '存活确认', value: survival },
   ]
 }

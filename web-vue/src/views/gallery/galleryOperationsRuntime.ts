@@ -226,8 +226,15 @@ export function useGalleryOperationsRuntime(options: GalleryOperationsRuntimeOpt
       options.closePreview()
       options.closeTagEditor()
       await Promise.all([refreshStorageStats({ lock: false }), options.loadGallery()])
-      storageActionMessage.value = `已清除 ${Number(result.media_files || 0)} 张图片，释放 ${formatBytes(result.freed_bytes)}。`
-      options.toast.success(storageActionMessage.value, '图片已清除')
+      const failures = Array.isArray(result.failures) ? result.failures : []
+      storageActionMessage.value = failures.length > 0
+        ? `已清除 ${Number(result.media_files || 0)} 张图片，释放 ${formatBytes(result.freed_bytes)}；仍有 ${failures.length} 个文件删除失败。`
+        : `已清除 ${Number(result.media_files || 0)} 张图片，释放 ${formatBytes(result.freed_bytes)}。`
+      if (failures.length > 0) {
+        options.toast.error(storageActionMessage.value, '部分图片清除失败')
+      } else {
+        options.toast.success(storageActionMessage.value, '图片已清除')
+      }
     } catch (error: any) {
       storageActionError.value = error?.message || '清除全部图片失败'
       options.toast.error(storageActionError.value, '清除失败')

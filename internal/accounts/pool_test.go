@@ -484,12 +484,75 @@ func TestPoolImageReservationExcludesKnownExhaustedQuota(t *testing.T) {
 		t.Fatal(err)
 	}
 	pool := New(repository)
-	if _, err := pool.ReserveMatchingImageLimit(context.Background(), []string{"basic"}, nil, nil, 4); !errors.Is(err, ErrUnavailable) {
-		t.Fatalf("known exhausted image account must be excluded from the image pool, got %v", err)
+	lease, err := pool.ReserveMatchingImageLimit(context.Background(), []string{"basic"}, nil, nil, 4)
+	if err != nil {
+		t.Fatalf("a zero quota without remote confirmation must still reach the remote probe layer, got %v", err)
 	}
-	lease, err := pool.ReserveMatchingLimit(context.Background(), []string{"basic"}, nil, nil, 0)
+	pool.Release(lease)
+	if _, _, err := repository.UpdateAccount("exhausted", map[string]any{
+		"status": "正常", "status_reason_code": "image_quota_exhausted",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.ReserveMatchingImageLimit(context.Background(), []string{"basic"}, nil, nil, 4); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("remotely confirmed exhausted image account must be excluded from the image pool, got %v", err)
+	}
+	lease, err = pool.ReserveMatchingLimit(context.Background(), []string{"basic"}, nil, nil, 0)
 	if err != nil {
 		t.Fatalf("known exhausted quota must not block ordinary text reservations: %v", err)
 	}
 	pool.Release(lease)
+}
+
+func TestPoolRuntimeSnapshotTracksImageInflightAndLastUse(t *testing.T) {
+	root := t.TempDir()
+	repository := store.New(filepath.Join(root, "accounts.json"), filepath.Join(root, "keys.json"), filepath.Join(root, "config.json"))
+	if err := repository.SaveAccounts([]map[string]any{{
+		"access_token": "one", "pool": "basic", "enabled": true, "status": "正常", "quota": 3,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	p := New(repository)
+	lease, err := p.ReserveMatchingImageLimit(context.Background(), []string{"basic"}, nil, nil, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := p.RuntimeSnapshot([]string{"basic"}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := snapshot["one"]
+	if state.ImageInflight != 1 || !state.Dispatchable || !state.Available || state.LastUsedAt.IsZero() {
+		t.Fatalf("unexpected active runtime state: %#v", state)
+	}
+	p.Release(lease)
+	snapshot, err = p.RuntimeSnapshot([]string{"basic"}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := snapshot["one"].ImageInflight; got != 0 {
+		t.Fatalf("released image lease still appears in flight: %d", got)
+	}
+}
+
+func TestPoolRuntimeSnapshotReportsDispatchReasons(t *testing.T) {
+	root := t.TempDir()
+	repository := store.New(filepath.Join(root, "accounts.json"), filepath.Join(root, "keys.json"), filepath.Join(root, "config.json"))
+	if err := repository.SaveAccounts([]map[string]any{
+		{"access_token": "limited", "pool": "basic", "enabled": true, "status": "限流", "quota": 0, "status_reason_code": "image_quota_exhausted"},
+		{"access_token": "disabled", "pool": "basic", "enabled": false, "status": "禁用"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	p := New(repository)
+	snapshot, err := p.RuntimeSnapshot([]string{"basic"}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state := snapshot["limited"]; state.Dispatchable || state.Available || state.ReasonCode != "image_quota_exhausted" {
+		t.Fatalf("unexpected limited state: %#v", state)
+	}
+	if state := snapshot["disabled"]; state.Dispatchable || state.Available || state.ReasonCode != "disabled" {
+		t.Fatalf("unexpected disabled state: %#v", state)
+	}
 }

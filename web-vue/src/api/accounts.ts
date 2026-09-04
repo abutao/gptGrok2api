@@ -70,6 +70,16 @@ export interface Account {
   checkout_upstream_status?: number
   quota?: number
   image_quota_unknown?: boolean
+  image_inflight?: number
+  available?: boolean
+  dispatchable?: boolean
+  dispatch_reason_code?: string
+  dispatch_reason?: string
+  last_remote_check_status?: string
+  last_remote_check_result?: string
+  last_remote_check_error?: string
+  last_remote_check_attempt_at?: string
+  last_remote_checked_at?: string
   name: string
   status?: 'ready' | 'incomplete' | 'disabled' | 'invalid' | 'auto_disabled' | 'cooling' | 'backoff'
   status_reason?: string
@@ -529,6 +539,16 @@ function mapBackendAccount(item: BackendAccount, index: number, usedIds: Set<str
     checkout_upstream_status: Number(item.checkout_upstream_status || 0) || undefined,
     quota,
     image_quota_unknown: imageQuotaUnknown,
+    image_inflight: optionalNonNegativeInteger(item.image_inflight) ?? 0,
+    available: item.available === undefined ? undefined : Boolean(item.available),
+    dispatchable: item.dispatchable === undefined ? undefined : Boolean(item.dispatchable),
+    dispatch_reason_code: cleanString(item.dispatch_reason_code),
+    dispatch_reason: cleanString(item.dispatch_reason),
+    last_remote_check_status: cleanString(item.last_remote_check_status),
+    last_remote_check_result: cleanString(item.last_remote_check_result),
+    last_remote_check_error: cleanString(item.last_remote_check_error),
+    last_remote_check_attempt_at: cleanString(item.last_remote_check_attempt_at),
+    last_remote_checked_at: cleanString(item.last_remote_checked_at),
     name: email || `${type} / ${sourceType}`,
     cookie: tokenPreview || maskToken(accessToken),
     snlm0e: '',

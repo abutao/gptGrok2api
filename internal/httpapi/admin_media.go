@@ -196,41 +196,7 @@ func (s *Server) clearAllImages(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed", "invalid_request_error")
 		return
 	}
-	mediaFiles, metadataFiles, freedBytes := 0, 0, int64(0)
-	err := filepath.Walk(s.cfg.ImageDataDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if info == nil || info.IsDir() {
-			return nil
-		}
-		isMetadata := strings.HasSuffix(strings.ToLower(info.Name()), ".meta.json")
-		if !isMetadata && !isImageStorageFile(info.Name()) {
-			return nil
-		}
-		if removeErr := os.Remove(path); removeErr != nil {
-			return removeErr
-		}
-		freedBytes += info.Size()
-		if isMetadata {
-			metadataFiles++
-		} else {
-			mediaFiles++
-			metaPath := path + ".meta.json"
-			if metaInfo, statErr := os.Stat(metaPath); statErr == nil {
-				if removeErr := os.Remove(metaPath); removeErr != nil {
-					return removeErr
-				}
-				freedBytes += metaInfo.Size()
-				metadataFiles++
-			}
-		}
-		return nil
-	})
-	if err != nil && !os.IsNotExist(err) {
-		writeError(w, http.StatusInternalServerError, err.Error(), "server_error")
-		return
-	}
+	result := clearImageStorage(s.cfg.ImageDataDir, os.Remove)
 	cleanupEmptyDirs(s.cfg.ImageDataDir)
 
 	tagsFileRemoved := false
@@ -238,15 +204,69 @@ func (s *Server) clearAllImages(w http.ResponseWriter, r *http.Request) {
 	if err := os.Remove(s.tagsPath()); err == nil {
 		tagsFileRemoved = true
 	} else if !os.IsNotExist(err) {
-		imageTagsMu.Unlock()
-		writeError(w, http.StatusInternalServerError, err.Error(), "server_error")
-		return
+		result.failures = append(result.failures, imageClearFailure{Path: s.tagsPath(), Error: err.Error()})
 	}
 	imageTagsMu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok": true, "media_files": mediaFiles, "metadata_files": metadataFiles,
-		"freed_bytes": freedBytes, "tags_file_removed": tagsFileRemoved,
+		"ok": len(result.failures) == 0, "media_files": result.mediaFiles, "metadata_files": result.metadataFiles,
+		"freed_bytes": result.freedBytes, "tags_file_removed": tagsFileRemoved, "failures": result.failures,
 	})
+}
+
+type imageClearFailure struct {
+	Path  string `json:"path"`
+	Error string `json:"error"`
+}
+
+type imageClearResult struct {
+	mediaFiles    int
+	metadataFiles int
+	freedBytes    int64
+	failures      []imageClearFailure
+}
+
+type imageClearFile struct {
+	path     string
+	size     int64
+	metadata bool
+}
+
+func clearImageStorage(root string, remove func(string) error) imageClearResult {
+	result := imageClearResult{}
+	files := make([]imageClearFile, 0)
+	walkErr := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			if !os.IsNotExist(err) {
+				result.failures = append(result.failures, imageClearFailure{Path: path, Error: err.Error()})
+			}
+			return nil
+		}
+		if info == nil || info.IsDir() {
+			return nil
+		}
+		isMetadata := strings.HasSuffix(strings.ToLower(info.Name()), ".meta.json")
+		if isMetadata || isImageStorageFile(info.Name()) {
+			files = append(files, imageClearFile{path: path, size: info.Size(), metadata: isMetadata})
+		}
+		return nil
+	})
+	if walkErr != nil && !os.IsNotExist(walkErr) {
+		result.failures = append(result.failures, imageClearFailure{Path: root, Error: walkErr.Error()})
+	}
+
+	for _, file := range files {
+		if err := remove(file.path); err != nil {
+			result.failures = append(result.failures, imageClearFailure{Path: file.path, Error: err.Error()})
+			continue
+		}
+		result.freedBytes += file.size
+		if file.metadata {
+			result.metadataFiles++
+		} else {
+			result.mediaFiles++
+		}
+	}
+	return result
 }
 
 func (s *Server) removeMediaPath(value string) bool {

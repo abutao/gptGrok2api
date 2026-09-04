@@ -54,6 +54,13 @@
     <td class="py-4 pr-5 align-middle">
       <QuotaBadge :account="item" />
     </td>
+    <td class="py-4 pr-5 align-middle">
+      <StatusPill
+        :label="accountDispatchText(item)"
+        :tone-class="`${accountDispatchToneClass(item)} border-border`"
+        title="图片调度状态"
+      />
+    </td>
     <td class="py-4 pr-5 align-middle text-xs text-muted-foreground">
       {{ accountRestoreText(item) }}
     </td>
@@ -91,6 +98,8 @@ import QuotaBadge from '@/components/ai/QuotaBadge.vue'
 import type { Account } from '@/api/accounts'
 import {
   accountCreatedText,
+  accountDispatchText,
+  accountDispatchToneClass,
   accountPrimaryText,
   accountRestoreText,
   accountRowSignature,

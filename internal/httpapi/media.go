@@ -378,17 +378,35 @@ func (s *Server) parseImageEditRequest(r *http.Request) (imageEditRequest, error
 	if contentType == "application/json" {
 		return s.parseJSONImageEditRequest(r)
 	}
+	if contentType == "application/x-www-form-urlencoded" {
+		if err := r.ParseForm(); err != nil {
+			return imageEditRequest{}, imageEditParseError{Message: "invalid form body: " + err.Error()}
+		}
+		return s.parseImageEditForm(r.Context(), r.Form, nil)
+	}
 	if contentType != "multipart/form-data" && contentType != "" {
 		return imageEditRequest{}, imageEditParseError{Message: "Content-Type must be multipart/form-data or application/json"}
 	}
 	if err := r.ParseMultipartForm(64 << 20); err != nil {
+		// A few gateways preserve the multipart media type while forwarding a
+		// JSON body and dropping its boundary parameter. The body is still
+		// unambiguous in this case, so accept it using the same JSON parser as
+		// the reference implementation. Never guess a multipart boundary.
+		if missingMultipartBoundary(err) && bodyLooksLikeJSON(r) {
+			return s.parseJSONImageEditRequest(r)
+		}
 		message := "invalid multipart form"
-		if strings.Contains(strings.ToLower(err.Error()), "boundary") {
+		if missingMultipartBoundary(err) {
 			message = "invalid multipart form: missing boundary in Content-Type"
+		} else if multipartBodyTruncated(err) {
+			message = "invalid multipart form: request body is truncated"
 		}
 		return imageEditRequest{}, imageEditParseError{Message: message}
 	}
-	values := r.MultipartForm.Value
+	return s.parseImageEditForm(r.Context(), r.MultipartForm.Value, r.MultipartForm)
+}
+
+func (s *Server) parseImageEditForm(ctx context.Context, values map[string][]string, form *multipart.Form) (imageEditRequest, error) {
 	request := imageEditRequest{
 		Model:          firstFormValue(values, "model"),
 		Prompt:         strings.TrimSpace(firstFormValue(values, "prompt")),
@@ -397,9 +415,19 @@ func (s *Server) parseImageEditRequest(r *http.Request) (imageEditRequest, error
 		Quality:        firstFormValue(values, "quality"),
 		ResponseFormat: firstFormValue(values, "response_format"),
 	}
-	request.HasMask = hasMultipartField(r.MultipartForm, imageEditMaskFields)
+	request.HasMask = hasMultipartField(form, imageEditMaskFields)
 	for _, field := range imageEditReferenceFields {
-		for _, header := range r.MultipartForm.File[field] {
+		if form == nil {
+			for _, value := range values[field] {
+				inputs, err := s.imageInputsFromValue(ctx, value)
+				if err != nil {
+					return imageEditRequest{}, err
+				}
+				request.Inputs = append(request.Inputs, inputs...)
+			}
+			continue
+		}
+		for _, header := range form.File[field] {
 			input, err := imageInputFromFileHeader(header)
 			if err != nil {
 				return imageEditRequest{}, err
@@ -407,7 +435,7 @@ func (s *Server) parseImageEditRequest(r *http.Request) (imageEditRequest, error
 			request.Inputs = append(request.Inputs, input)
 		}
 		for _, value := range values[field] {
-			inputs, err := s.imageInputsFromValue(r.Context(), value)
+			inputs, err := s.imageInputsFromValue(ctx, value)
 			if err != nil {
 				return imageEditRequest{}, err
 			}
@@ -415,6 +443,33 @@ func (s *Server) parseImageEditRequest(r *http.Request) (imageEditRequest, error
 		}
 	}
 	return request, nil
+}
+
+func missingMultipartBoundary(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "boundary")
+}
+
+func multipartBodyTruncated(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return errors.Is(err, io.ErrUnexpectedEOF) || strings.Contains(message, "unexpected eof") || strings.HasSuffix(message, ": eof")
+}
+
+func bodyLooksLikeJSON(r *http.Request) bool {
+	if r == nil || r.Body == nil {
+		return false
+	}
+	raw, err := io.ReadAll(io.LimitReader(r.Body, maxJSONBodyBytes+1))
+	if err != nil || len(raw) > maxJSONBodyBytes {
+		return false
+	}
+	raw = bytes.TrimSpace(raw)
+	raw = bytes.TrimPrefix(raw, []byte{0xef, 0xbb, 0xbf})
+	raw = bytes.TrimSpace(raw)
+	r.Body = io.NopCloser(bytes.NewReader(raw))
+	return len(raw) > 0 && (raw[0] == '{' || raw[0] == '[')
 }
 
 func (s *Server) parseJSONImageEditRequest(r *http.Request) (imageEditRequest, error) {

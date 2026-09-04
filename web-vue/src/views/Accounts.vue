@@ -110,7 +110,7 @@
       />
 
       <TableShell v-else-if="viewMode === 'list'">
-        <table class="min-w-[1080px] w-full text-left text-sm">
+        <table class="min-w-[1180px] w-full text-left text-sm">
           <thead class="text-xs uppercase tracking-[0.16em] text-muted-foreground">
             <tr>
               <th class="w-12 py-3 pr-4">
@@ -125,6 +125,7 @@
               <th class="py-3 pr-5">账户信息</th>
               <th class="py-3 pr-5">创建时间</th>
               <th class="py-3 pr-5">图片额度</th>
+              <th class="py-3 pr-5">图片调度</th>
               <th class="py-3 pr-5">恢复时间</th>
               <th class="py-3 pr-5">成功 / 失败</th>
               <th class="py-3 text-right">操作</th>
@@ -132,7 +133,7 @@
           </thead>
           <tbody class="text-sm text-foreground">
             <tr v-if="!loading && filteredAccounts.length === 0">
-              <td colspan="10" class="py-6">
+              <td colspan="11" class="py-6">
                 <EmptyState
                   plain
                   title="暂无账号数据"

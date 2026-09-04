@@ -33,34 +33,146 @@ func (s *Server) reserveOpenAIImageAccount(ctx context.Context, pools []string, 
 }
 
 func (s *Server) reserveOpenAIAccountWithMode(ctx context.Context, pools []string, excluded map[string]bool, maxInflight int, imageOnly bool) (*accounts.Lease, error) {
+	if excluded == nil {
+		excluded = map[string]bool{}
+	}
 	var (
 		lease *accounts.Lease
 		err   error
 	)
-	if imageOnly {
-		lease, err = s.accountPool.ReserveMatchingImageLimit(ctx, pools, excluded, isOpenAIAccount, maxInflight)
-	} else {
-		lease, err = s.accountPool.ReserveMatchingLimit(ctx, pools, excluded, isOpenAIAccount, maxInflight)
-	}
-	if err != nil {
-		return nil, err
-	}
-	active, err := s.ensureOpenAIAccessToken(ctx, lease.Account)
-	if err != nil {
+	for {
+		if imageOnly {
+			lease, err = s.accountPool.ReserveMatchingImageLimit(ctx, pools, excluded, isOpenAIAccount, maxInflight)
+		} else {
+			lease, err = s.accountPool.ReserveMatchingLimit(ctx, pools, excluded, isOpenAIAccount, maxInflight)
+		}
+		if err != nil {
+			return nil, err
+		}
+		active, err := s.ensureOpenAIAccessToken(ctx, lease.Account)
+		if err != nil {
+			s.accountPool.Release(lease)
+			// Token refresh is a preflight operation, not an upstream execution of
+			// the caller's request. refreshOpenAIAccessToken already persists either
+			// a terminal auth state or a short retry warning, so recording ordinary
+			// request feedback here would double-count failures and add the normal
+			// request cooldown to a transient OAuth outage.
+			return nil, err
+		}
+		// Token rotation changes the token used by provider requests. Move pool
+		// runtime state first so new reservations see this lease's existing
+		// in-flight slot and cannot oversubscribe a known image quota.
+		s.accountPool.MigrateLeaseToken(lease, active.Token)
+		lease.Account = active
+
+		if !imageOnly || !needsOpenAIImageRemoteProbe(active) {
+			return lease, nil
+		}
+		probed, probeErr := s.confirmOpenAIImageAccount(ctx, active)
+		if probeErr == nil {
+			s.accountPool.MigrateLeaseToken(lease, probed.Token)
+			lease.Account = probed
+			// A successful account refresh can still confirm that the image
+			// quota is exhausted. Treat that as a dispatch decision, not as a
+			// refresh failure: release the reservation and keep looking for a
+			// different account instead of sending a doomed image request.
+			if confirmedImageQuotaExhausted(probed) {
+				s.accountPool.Release(lease)
+				excluded[probed.Token] = true
+				continue
+			}
+			return lease, nil
+		}
 		s.accountPool.Release(lease)
-		// Token refresh is a preflight operation, not an upstream execution of
-		// the caller's request. refreshOpenAIAccessToken already persists either
-		// a terminal auth state or a short retry warning, so recording ordinary
-		// request feedback here would double-count failures and add the normal
-		// request cooldown to a transient OAuth outage.
-		return nil, err
+		excluded[active.Token] = true
+		// The account was only a candidate for this request. A failed remote
+		// probe must not force a new generation; try the next ready account.
 	}
-	// Token rotation changes the token used by provider requests. Move pool
-	// runtime state first so new reservations see this lease's existing inflight
-	// slot and cannot oversubscribe a known image quota.
-	s.accountPool.MigrateLeaseToken(lease, active.Token)
-	lease.Account = active
-	return lease, nil
+}
+
+func confirmedImageQuotaExhausted(account accounts.Account) bool {
+	if boolValue(account.Fields["image_quota_unknown"], false) {
+		return false
+	}
+	quota, ok := account.Fields["quota"]
+	if !ok || quota == nil || intValue(quota) > 0 {
+		return false
+	}
+	status := strings.ToLower(strings.TrimSpace(stringValue(account.Fields["status"])))
+	reason := strings.ToLower(strings.TrimSpace(stringValue(account.Fields["status_reason_code"])))
+	return status == "limited" || status == "rate_limited" || status == "限流" ||
+		reason == "image_quota_exhausted" || reason == "quota_exhausted"
+}
+
+func needsOpenAIImageRemoteProbe(account accounts.Account) bool {
+	if boolValue(account.Fields["image_quota_unknown"], false) || boolValue(account.Fields["image_quota_pending_confirmation"], false) {
+		return true
+	}
+	quota, ok := account.Fields["quota"]
+	return ok && quota != nil && intValue(quota) <= 0
+}
+
+func (s *Server) confirmOpenAIImageAccount(ctx context.Context, account accounts.Account) (accounts.Account, error) {
+	result, err := s.openAIAccountClient().RefreshAccount(ctx, account.Fields)
+	if err != nil {
+		updates := accountRefreshFailureUpdates(err)
+		if updates == nil {
+			updates = map[string]any{}
+		}
+		message := safeRefreshError(err)
+		updates["last_remote_check_status"] = imageRemoteCheckStatus(err)
+		updates["last_remote_check_error"] = message
+		updates["last_remote_check_attempt_at"] = time.Now().UTC().Format(time.RFC3339)
+		updates["last_remote_checked_at"] = time.Now().UTC().Format(time.RFC3339)
+		_, _, _ = s.store.UpdateAccountIfCredentials(account.Token, account.CredentialGeneration, updates)
+		return account, err
+	}
+
+	fields := cloneMap(result.Fields)
+	fields["last_remote_check_status"] = imageRemoteCheckResultStatus(fields)
+	fields["last_remote_check_result"] = imageRemoteCheckResultStatus(fields)
+	fields["last_remote_check_error"] = nil
+	fields["last_remote_check_attempt_at"] = time.Now().UTC().Format(time.RFC3339)
+	fields["last_remote_checked_at"] = time.Now().UTC().Format(time.RFC3339)
+
+	var (
+		updated   map[string]any
+		applied   bool
+		updateErr error
+	)
+	if strings.TrimSpace(result.AccessToken) != "" && strings.TrimSpace(result.AccessToken) != strings.TrimSpace(account.Token) {
+		updated, applied, updateErr = s.store.RotateAccountTokensIfCredentials(account.Token, result.AccessToken, result.RefreshToken, result.IDToken, fields, account.CredentialGeneration)
+	} else {
+		updated, applied, updateErr = s.store.UpdateAccountIfCredentials(account.Token, account.CredentialGeneration, fields)
+	}
+	if updateErr != nil {
+		return account, updateErr
+	}
+	if !applied && updated == nil {
+		return account, errOpenAICredentialsChanged
+	}
+	if updated == nil {
+		updated = fields
+	}
+	return openAIAccountFromFields(updated), nil
+}
+
+func imageRemoteCheckResultStatus(fields map[string]any) string {
+	if intValue(fields["quota"]) <= 0 && !boolValue(fields["image_quota_unknown"], false) {
+		return "limited"
+	}
+	return "ok"
+}
+
+func imageRemoteCheckStatus(err error) string {
+	if errors.Is(err, provider.ErrInvalidAccessToken) || terminalTokenRefreshError(strings.ToLower(safeRefreshError(err))) {
+		return "token_dead"
+	}
+	lower := strings.ToLower(safeRefreshError(err))
+	if strings.Contains(lower, "quota") || strings.Contains(lower, "额度") || strings.Contains(lower, "rate limit") || strings.Contains(lower, "http 429") {
+		return "limited"
+	}
+	return "unavailable"
 }
 
 var errOpenAICredentialsChanged = errors.New("OpenAI account credentials changed during refresh")

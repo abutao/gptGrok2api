@@ -434,7 +434,7 @@ func (s *Server) monitorAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	path := strings.TrimPrefix(r.URL.Path, "/api/monitor/realtime")
 	if path == "" || path == "/" {
-		writeJSON(w, http.StatusOK, s.monitorSnapshotWithHistory())
+		writeJSON(w, http.StatusOK, s.monitorSnapshotRealtime())
 		return
 	}
 	parts := strings.Split(strings.Trim(path, "/"), "/")
@@ -454,6 +454,24 @@ func (s *Server) monitorAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"detail": item})
+}
+
+// monitorSnapshotRealtime deliberately reads only the in-process monitor
+// window. Historical call logs are kept for the log-management APIs and are
+// not rescanned on every five-second dashboard poll.
+func (s *Server) monitorSnapshotRealtime() map[string]any {
+	snapshot := s.monitor.snapshot()
+	statsActive := monitorRecordMaps(snapshot["active"])
+	statsRecent := monitorRecordMaps(snapshot["recent"])
+	// Keep the small numeric timing maps for the active-row digest. The large
+	// payloads (events/request_meta) are still removed before sending JSON.
+	active := compactMonitorRecordMaps(snapshot["active"], true)
+	recent := compactMonitorRecordMaps(snapshot["recent"], true)
+	if len(recent) > 50 {
+		recent = recent[:50]
+	}
+	events := compactMonitorEvents(snapshot["active"], snapshot["recent"])
+	return buildMonitorSnapshot(snapshot, active, recent, events, statsActive, statsRecent)
 }
 
 func (s *Server) monitorSnapshotWithHistory() map[string]any {
@@ -480,6 +498,10 @@ func (s *Server) monitorSnapshotWithHistory() map[string]any {
 	if len(recent) > 200 {
 		recent = recent[:200]
 	}
+	return buildMonitorSnapshot(snapshot, active, recent, events, active, recent)
+}
+
+func buildMonitorSnapshot(snapshot map[string]any, active, recent, events, statsActive, statsRecent []map[string]any) map[string]any {
 
 	slow := append([]map[string]any(nil), recent...)
 	sort.SliceStable(slow, func(i, j int) bool {
@@ -489,17 +511,17 @@ func (s *Server) monitorSnapshotWithHistory() map[string]any {
 		slow = slow[:50]
 	}
 
-	recentCounts := monitorCountsByField(recent, func(item map[string]any) string {
+	recentCounts := monitorCountsByField(statsRecent, func(item map[string]any) string {
 		return stringValue(item["model"])
 	})
-	activeCounts := monitorCountsByField(active, func(item map[string]any) string {
+	activeCounts := monitorCountsByField(statsActive, func(item map[string]any) string {
 		return stringValue(item["model"])
 	})
 	if len(activeCounts) == 0 {
 		activeCounts = recentCounts
 	}
 
-	activeStageCounts := monitorCountsByField(active, func(item map[string]any) string {
+	activeStageCounts := monitorCountsByField(statsActive, func(item map[string]any) string {
 		stage := strings.TrimSpace(stringValue(item["stage"]))
 		if stage == "" {
 			stage = strings.TrimSpace(stringValue(item["stage_label"]))
@@ -507,7 +529,7 @@ func (s *Server) monitorSnapshotWithHistory() map[string]any {
 		return stage
 	})
 	if len(activeStageCounts) == 0 {
-		activeStageCounts = monitorCountsByField(recent, func(item map[string]any) string {
+		activeStageCounts = monitorCountsByField(statsRecent, func(item map[string]any) string {
 			stage := strings.TrimSpace(stringValue(item["stage"]))
 			if stage == "" {
 				stage = strings.TrimSpace(stringValue(item["stage_label"]))
@@ -516,13 +538,13 @@ func (s *Server) monitorSnapshotWithHistory() map[string]any {
 		})
 	}
 
-	activeEgressCounts := monitorCountsByField(active, monitorEgressKey)
+	activeEgressCounts := monitorCountsByField(statsActive, monitorEgressKey)
 	if len(activeEgressCounts) == 0 {
-		activeEgressCounts = monitorCountsByField(recent, monitorEgressKey)
+		activeEgressCounts = monitorCountsByField(statsRecent, monitorEgressKey)
 	}
 
-	durationValues := monitorMetricValues(recent, "duration_ms")
-	metricValues := monitorMetricValuesMap(recent, monitorMonitorMetricKeys)
+	durationValues := monitorMetricValues(statsRecent, "duration_ms")
+	metricValues := monitorMetricValuesMap(statsRecent, monitorMonitorMetricKeys)
 	metricP95 := map[string]any{}
 	metricLabels := map[string]string{}
 	bottleneckKey := ""
@@ -563,7 +585,7 @@ func (s *Server) monitorSnapshotWithHistory() map[string]any {
 		"active_by_egress": activeEgressCounts,
 	}
 	var totalDuration int64
-	for _, item := range recent {
+	for _, item := range statsRecent {
 		status := strings.ToLower(stringValue(item["status"]))
 		switch status {
 		case "success", "completed":
@@ -599,9 +621,9 @@ func (s *Server) monitorSnapshotWithHistory() map[string]any {
 		}
 	}
 	success := monitorNumber(summary["success"])
-	if len(recent) > 0 {
-		summary["avg_duration_ms"] = totalDuration / int64(len(recent))
-		summary["success_rate"] = float64(success) * 100 / float64(len(recent))
+	if len(statsRecent) > 0 {
+		summary["avg_duration_ms"] = totalDuration / int64(len(statsRecent))
+		summary["success_rate"] = float64(success) * 100 / float64(len(statsRecent))
 	}
 	snapshot["active"] = active
 	snapshot["recent"] = recent
@@ -609,7 +631,7 @@ func (s *Server) monitorSnapshotWithHistory() map[string]any {
 	snapshot["events"] = events
 	snapshot["summary"] = summary
 	snapshot["threadpool"] = map[string]any{"tokens": 0, "previous_tokens": 0}
-	snapshot["window"] = map[string]any{"completed": len(recent), "completed_capacity": 200, "events": len(events), "event_capacity": 1000}
+	snapshot["window"] = map[string]any{"completed": len(statsRecent), "completed_capacity": 200, "events": len(events), "event_capacity": 1000}
 	snapshot["metric_labels"] = metricLabels
 	return snapshot
 }
@@ -629,6 +651,76 @@ func monitorRecordMaps(value any) []map[string]any {
 				result = append(result, record)
 			}
 		}
+	}
+	return result
+}
+
+func compactMonitorRecordMaps(value any, keepMetrics bool) []map[string]any {
+	result := []map[string]any{}
+	switch typed := value.(type) {
+	case []monitorRecord:
+		for _, item := range typed {
+			result = append(result, compactMonitorRecordMap(item, keepMetrics))
+		}
+	case []map[string]any:
+		for _, item := range typed {
+			result = append(result, compactMonitorMap(item, keepMetrics))
+		}
+	case []any:
+		for _, item := range typed {
+			if record, ok := item.(map[string]any); ok {
+				result = append(result, compactMonitorMap(record, keepMetrics))
+			}
+		}
+	}
+	return result
+}
+
+func compactMonitorRecordMap(item monitorRecord, keepMetrics bool) map[string]any {
+	result := monitorRecordMap(item)
+	delete(result, "events")
+	delete(result, "request_meta")
+	if !keepMetrics {
+		delete(result, "metrics")
+		delete(result, "perf")
+	}
+	return result
+}
+
+func compactMonitorMap(item map[string]any, keepMetrics bool) map[string]any {
+	result := cloneMap(item)
+	delete(result, "events")
+	delete(result, "request_meta")
+	if !keepMetrics {
+		delete(result, "metrics")
+		delete(result, "perf")
+	}
+	return result
+}
+
+func compactMonitorEvents(values ...any) []map[string]any {
+	result := []map[string]any{}
+	for _, value := range values {
+		records, ok := value.([]monitorRecord)
+		if !ok {
+			continue
+		}
+		for _, record := range records {
+			for _, rawEvent := range record.Events {
+				event := cloneMap(rawEvent)
+				delete(event, "request_meta")
+				delete(event, "metrics")
+				delete(event, "perf")
+				event["call_id"] = record.CallID
+				if stringValue(event["model"]) == "" {
+					event["model"] = record.Model
+				}
+				result = append(result, event)
+			}
+		}
+	}
+	if len(result) > 1000 {
+		result = result[len(result)-1000:]
 	}
 	return result
 }

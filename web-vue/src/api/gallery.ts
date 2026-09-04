@@ -75,6 +75,7 @@ export interface ClearImagesResult {
   metadata_files: number
   freed_bytes: number
   tags_file_removed: boolean
+  failures?: Array<{ path: string; error: string }>
 }
 
 type BackendImageItem = Record<string, any>

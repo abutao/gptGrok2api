@@ -169,6 +169,137 @@ func TestReserveOpenAIAccountDoesNotCountTransientRefreshFailureAsRequestFailure
 	}
 }
 
+func TestReserveOpenAIImageAccountConfirmsZeroQuotaRemotely(t *testing.T) {
+	root := t.TempDir()
+	cfg := testConfig()
+	cfg.RootDir = root
+	cfg.DataDir = root
+	cfg.ConfigPath = filepath.Join(root, "config.json")
+	cfg.AccountsPath = filepath.Join(root, "accounts.json")
+	cfg.AuthKeysPath = filepath.Join(root, "auth_keys.json")
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer zero-quota-token" {
+			http.Error(w, "unexpected token", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/backend-api/me":
+			_ = json.NewEncoder(w).Encode(map[string]any{"email": "probe@example.test", "id": "probe-user"})
+		case "/backend-api/conversation/init":
+			_ = json.NewEncoder(w).Encode(map[string]any{"limits_progress": []any{map[string]any{"feature_name": "image_gen", "remaining": 4}}})
+		case "/backend-api/accounts/check/v4-2023-04-27":
+			_ = json.NewEncoder(w).Encode(map[string]any{"accounts": map[string]any{"default": map[string]any{"account": map[string]any{"plan_type": "plus"}}}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+	cfg.OpenAIBaseURL = upstream.URL
+	server := New(cfg)
+	if _, _, _, err := server.store.AddAccounts(nil, []map[string]any{{
+		"access_token": "zero-quota-token", "pool": "basic", "enabled": true, "status": "正常",
+		"quota": 0, "image_quota_unknown": false,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	lease, err := server.reserveOpenAIImageAccount(context.Background(), []string{"basic"}, nil, 2)
+	if err != nil {
+		t.Fatalf("zero quota account should be admitted after remote confirmation: %v", err)
+	}
+	defer server.accountPool.Release(lease)
+	if got := intValue(lease.Account.Fields["quota"]); got != 4 {
+		t.Fatalf("lease did not receive confirmed remote quota, got %d: %#v", got, lease.Account.Fields)
+	}
+	items, err := server.store.AccountList()
+	if err != nil || len(items) != 1 {
+		t.Fatalf("unexpected accounts: %#v, %v", items, err)
+	}
+	if stringValue(items[0]["last_remote_check_status"]) != "ok" {
+		t.Fatalf("remote probe result was not persisted: %#v", items[0])
+	}
+}
+
+func TestReserveOpenAIImageAccountSkipsRemotelyExhaustedAccount(t *testing.T) {
+	root := t.TempDir()
+	cfg := testConfig()
+	cfg.RootDir = root
+	cfg.DataDir = root
+	cfg.ConfigPath = filepath.Join(root, "config.json")
+	cfg.AccountsPath = filepath.Join(root, "accounts.json")
+	cfg.AuthKeysPath = filepath.Join(root, "auth_keys.json")
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token := r.Header.Get("Authorization")
+		if token != "Bearer exhausted-token" && token != "Bearer available-token" {
+			http.Error(w, "unexpected token", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/backend-api/me":
+			email := "exhausted@example.test"
+			if token == "Bearer available-token" {
+				email = "available@example.test"
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"email": email, "id": email})
+		case "/backend-api/conversation/init":
+			remaining := 0
+			if token == "Bearer available-token" {
+				remaining = 4
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"limits_progress": []any{map[string]any{"feature_name": "image_gen", "remaining": remaining}},
+			})
+		case "/backend-api/accounts/check/v4-2023-04-27":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"accounts": map[string]any{
+					"default": map[string]any{"account": map[string]any{"plan_type": "plus"}},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+	cfg.OpenAIBaseURL = upstream.URL
+	server := New(cfg)
+	if _, _, _, err := server.store.AddAccounts(nil, []map[string]any{
+		{
+			"access_token": "exhausted-token", "pool": "basic", "enabled": true,
+			"status": "正常", "quota": 0, "image_quota_unknown": false,
+		},
+		{
+			"access_token": "available-token", "pool": "basic", "enabled": true,
+			"status": "正常", "quota": 0, "image_quota_unknown": false,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	lease, err := server.reserveOpenAIImageAccount(context.Background(), []string{"basic"}, nil, 2)
+	if err != nil {
+		t.Fatalf("expected fallback to the remotely available account: %v", err)
+	}
+	defer server.accountPool.Release(lease)
+	if lease.Account.Token != "available-token" {
+		t.Fatalf("remotely exhausted account was not skipped, selected %q", lease.Account.Token)
+	}
+
+	snapshot, err := server.accountPool.RuntimeSnapshot([]string{"basic"}, true, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state := snapshot["exhausted-token"]; state.Dispatchable || state.ReasonCode != "image_quota_exhausted" {
+		t.Fatalf("exhausted account remained dispatchable: %#v", state)
+	}
+	if state := snapshot["available-token"]; state.ImageInflight != 1 {
+		t.Fatalf("fallback account lease was not tracked: %#v", state)
+	}
+}
+
 func TestAccountTokenRefreshFailureUpdatesClassifiesTerminalRefreshErrors(t *testing.T) {
 	for _, message := range []string{
 		"oauth refresh HTTP 400: invalid_grant",

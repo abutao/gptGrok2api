@@ -31,6 +31,18 @@ type Lease struct {
 	once          sync.Once
 }
 
+// RuntimeAccountState is the scheduler's live view of an account. It is kept
+// separate from persisted account fields because in-flight work and cooldowns
+// are process-local state.
+type RuntimeAccountState struct {
+	ImageInflight int
+	Available     bool
+	Dispatchable  bool
+	ReasonCode    string
+	Reason        string
+	LastUsedAt    time.Time
+}
+
 type Pool struct {
 	repository   *store.Store
 	onInvalid    func(Account)
@@ -41,6 +53,7 @@ type Pool struct {
 	failures     map[string]int
 	tokenAliases map[string]string
 	quarantined  map[string]bool
+	lastUsed     map[string]time.Time
 	wake         chan struct{}
 	accounts     []Account
 	revision     uint64
@@ -63,6 +76,7 @@ func New(repository *store.Store) *Pool {
 		failures:     map[string]int{},
 		tokenAliases: map[string]string{},
 		quarantined:  map[string]bool{},
+		lastUsed:     map[string]time.Time{},
 		wake:         make(chan struct{}),
 	}
 }
@@ -154,10 +168,111 @@ func (p *Pool) reserveMatchingLimit(ctx context.Context, pools []string, exclude
 		// Starting at a rotating offset preserves tie fairness without building
 		// a temporary candidate list for every request.
 		p.next++
-		p.inflight[p.runtimeTokenLocked(selected.Token)]++
+		runtimeToken := p.runtimeTokenLocked(selected.Token)
+		p.inflight[runtimeToken]++
+		p.lastUsed[runtimeToken] = now
 		p.mu.Unlock()
 		return &Lease{Account: selected, reservedToken: selected.Token, pool: p}, nil
 	}
+}
+
+// RuntimeSnapshot returns a point-in-time view keyed by the current access
+// token. The caller can combine it with the persisted account list without
+// exposing the pool's internal maps.
+func (p *Pool) RuntimeSnapshot(pools []string, imageOnly bool, configuredLimit ...int) (map[string]RuntimeAccountState, error) {
+	items, revision, err := p.repository.AccountSnapshot()
+	if err != nil {
+		return nil, fmt.Errorf("load accounts: %w", err)
+	}
+	now := time.Now()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.revision != revision {
+		p.accounts = normalizeAccounts(items)
+		p.revision = revision
+	}
+	result := make(map[string]RuntimeAccountState, len(p.accounts))
+	limit := 0
+	if len(configuredLimit) > 0 {
+		limit = configuredLimit[0]
+	}
+	for _, account := range p.accounts {
+		state := p.runtimeStateLocked(account, pools, imageOnly, now, limit)
+		if state.LastUsedAt.IsZero() {
+			state.LastUsedAt = timestamp(account.Fields, "last_used_at")
+		}
+		result[account.Token] = state
+	}
+	return result, nil
+}
+
+func (p *Pool) runtimeStateLocked(account Account, pools []string, imageOnly bool, now time.Time, configuredLimit int) RuntimeAccountState {
+	token := p.runtimeTokenLocked(account.Token)
+	state := RuntimeAccountState{
+		ImageInflight: p.inflight[token],
+		LastUsedAt:    p.lastUsed[token],
+	}
+	state.Available = p.available(account, pools, now)
+	state.Dispatchable = state.Available
+	if !state.Available {
+		state.ReasonCode, state.Reason = p.unavailableReasonLocked(account, pools, now)
+		return state
+	}
+	if imageOnly && knownExhaustedImageQuota(account) {
+		state.Available = false
+		state.Dispatchable = false
+		state.ReasonCode = "image_quota_exhausted"
+		state.Reason = "图片额度已耗尽"
+		return state
+	}
+	if imageOnly {
+		limit := effectiveInflightLimit(account, configuredLimit)
+		if limit > 0 && state.ImageInflight >= limit {
+			state.Available = false
+			state.Dispatchable = false
+			state.ReasonCode = "concurrency_full"
+			state.Reason = "图片任务在途已满"
+			return state
+		}
+	}
+	state.ReasonCode = "available"
+	state.Reason = "可调度"
+	return state
+}
+
+func (p *Pool) unavailableReasonLocked(account Account, pools []string, now time.Time) (string, string) {
+	if !poolAllowed(account.Pool, pools) {
+		return "pool_not_allowed", "不在当前账号池"
+	}
+	if !boolValue(account.Fields["enabled"], true) {
+		return "disabled", "账号已禁用"
+	}
+	status := strings.ToLower(strings.TrimSpace(stringValue(account.Fields["status"])))
+	switch status {
+	case "disabled", "auto_disabled", "禁用":
+		return "disabled", "账号已禁用"
+	case "limited", "rate_limited", "cooling", "backoff", "限流":
+		if knownExhaustedImageQuota(account) {
+			return "image_quota_exhausted", "图片额度已耗尽"
+		}
+		return "rate_limited", "账号处于限流或冷却状态"
+	case "abnormal", "invalid", "error", "incomplete", "异常", "expired", "unauthorized":
+		return "account_unhealthy", "账号状态异常"
+	}
+	token := p.runtimeTokenLocked(account.Token)
+	if p.quarantined[token] {
+		return "quarantined", "账号已隔离，等待存储恢复"
+	}
+	if until := p.cooldowns[token]; until.After(now) {
+		return "cooldown", fmt.Sprintf("本地冷却中，剩余至 %s", until.UTC().Format(time.RFC3339))
+	}
+	if until := timestamp(account.Fields, "cooldown_until", "cooldown_until_ms", "next_retry_at", "next_token_refresh_at"); until.After(now) {
+		return "backoff", fmt.Sprintf("账号退避中，剩余至 %s", until.UTC().Format(time.RFC3339))
+	}
+	if knownExhaustedImageQuota(account) {
+		return "image_quota_exhausted", "图片额度已耗尽"
+	}
+	return "unavailable", "账号当前不可调度"
 }
 
 func knownExhaustedImageQuota(account Account) bool {
@@ -165,7 +280,20 @@ func knownExhaustedImageQuota(account Account) bool {
 		return false
 	}
 	value, ok := account.Fields["quota"]
-	return ok && value != nil && intValue(value) <= 0
+	if !ok || value == nil || intValue(value) > 0 {
+		return false
+	}
+	// A zero quota imported from an older database is only a hint. The
+	// reference service allows it through remote confirmation; locally
+	// consumed quota is marked pending for the same reason. Only an explicit
+	// limited/exhausted result is safe to remove from the dispatch pool.
+	if stringValue(account.Fields["status_reason_code"]) == "image_quota_pending_confirmation" {
+		return false
+	}
+	status := strings.ToLower(strings.TrimSpace(stringValue(account.Fields["status"])))
+	reason := strings.ToLower(strings.TrimSpace(stringValue(account.Fields["status_reason_code"])))
+	return status == "limited" || status == "rate_limited" || status == "限流" ||
+		reason == "image_quota_exhausted" || reason == "quota_exhausted"
 }
 
 // effectiveInflightLimit keeps a known image quota from being oversubscribed

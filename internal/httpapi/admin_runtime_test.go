@@ -148,6 +148,79 @@ func TestClearAllImages(t *testing.T) {
 	}
 }
 
+func TestClearAllImagesRemovesEveryImagePair(t *testing.T) {
+	root := t.TempDir()
+	cfg := adminTestConfig(root)
+	if err := os.MkdirAll(cfg.ImageDataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"first.png", "second.png"} {
+		imagePath := filepath.Join(cfg.ImageDataDir, name)
+		if err := os.WriteFile(imagePath, []byte(name), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(imagePath+".meta.json", []byte(`{"source_type":"generated_output"}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	response := adminRequest(New(cfg).Handler(), http.MethodPost, "/api/images/clear", nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("clear images failed: %d %s", response.Code, response.Body.String())
+	}
+	var payload struct {
+		MediaFiles    int `json:"media_files"`
+		MetadataFiles int `json:"metadata_files"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.MediaFiles != 2 || payload.MetadataFiles != 2 {
+		t.Fatalf("expected both image pairs to be removed, got %#v", payload)
+	}
+	entries, err := os.ReadDir(cfg.ImageDataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("image directory should be empty, found %d entries", len(entries))
+	}
+}
+
+func TestClearImageStorageContinuesAfterIndividualDeleteFailure(t *testing.T) {
+	root := t.TempDir()
+	blocked := filepath.Join(root, "blocked.png")
+	removable := filepath.Join(root, "removable.png")
+	for path, contents := range map[string]string{
+		blocked:   "blocked",
+		removable: "removable",
+	} {
+		if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	result := clearImageStorage(root, func(path string) error {
+		if path == blocked {
+			return os.ErrPermission
+		}
+		return os.Remove(path)
+	})
+
+	if result.mediaFiles != 1 {
+		t.Fatalf("expected one image removed, got %d", result.mediaFiles)
+	}
+	if len(result.failures) != 1 || result.failures[0].Path != blocked {
+		t.Fatalf("expected blocked file to be reported, got %#v", result.failures)
+	}
+	if _, err := os.Stat(removable); !os.IsNotExist(err) {
+		t.Fatalf("removable image should be deleted, err=%v", err)
+	}
+	if _, err := os.Stat(blocked); err != nil {
+		t.Fatalf("blocked image should remain for retry, err=%v", err)
+	}
+}
+
 func TestRuntimeMonitorLifecycle(t *testing.T) {
 	monitor := newRuntimeMonitor()
 	monitor.start("call-1", "/v1/videos", "video", "hello")
@@ -345,6 +418,79 @@ func TestMonitorSnapshotWithHistorySummary(t *testing.T) {
 	activeByStage, ok := summary["active_by_stage"].(map[string]any)
 	if !ok || monitorNumber(activeByStage["running"]) != 1 {
 		t.Fatalf("active_by_stage missing: %#v", summary["active_by_stage"])
+	}
+}
+
+func TestRealtimeMonitorEndpointUsesMemoryWindowAndCompactRows(t *testing.T) {
+	root := t.TempDir()
+	cfg := adminTestConfig(root)
+	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	history := map[string]any{
+		"type":    "call",
+		"id":      "historic-call",
+		"summary": "must not be loaded by realtime endpoint",
+		"detail": map[string]any{
+			"call_id":     "historic-call",
+			"endpoint":    "/v1/images/generations",
+			"model":       "gpt-image-2",
+			"status":      "success",
+			"started_at":  time.Now().Add(-time.Minute).UTC().Format(time.RFC3339),
+			"ended_at":    time.Now().UTC().Format(time.RFC3339),
+			"duration_ms": 60000,
+			"monitor": map[string]any{
+				"metrics": map[string]any{"total_ms": 60000},
+				"events":  []map[string]any{{"event": "historic", "label": "历史"}},
+			},
+		},
+	}
+	raw, err := json.Marshal(history)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg.DataDir, "logs.jsonl"), append(raw, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	server := New(cfg)
+	server.monitor.start("live-call", "/v1/images/generations", "gpt-image-2", "live prompt")
+	server.monitor.enrich("live-call", map[string]any{
+		"request_meta": map[string]any{"large": strings.Repeat("x", 4096)},
+	})
+
+	response := adminRequest(server.Handler(), http.MethodGet, "/api/monitor/realtime", nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected realtime status: %d %s", response.Code, response.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	active, ok := payload["active"].([]any)
+	if !ok || len(active) != 1 {
+		t.Fatalf("unexpected active rows: %#v", payload["active"])
+	}
+	activeRow, ok := active[0].(map[string]any)
+	if !ok || stringValue(activeRow["call_id"]) != "live-call" {
+		t.Fatalf("unexpected active row: %#v", active[0])
+	}
+	for _, key := range []string{"events", "request_meta"} {
+		if _, exists := activeRow[key]; exists {
+			t.Fatalf("compact active row contains %q: %#v", key, activeRow)
+		}
+	}
+	metrics, ok := activeRow["metrics"].(map[string]any)
+	if !ok || metrics == nil {
+		t.Fatalf("active row lost compact timing metrics: %#v", activeRow)
+	}
+	recent, ok := payload["recent"].([]any)
+	if !ok || len(recent) != 0 {
+		t.Fatalf("realtime endpoint loaded historical rows: %#v", payload["recent"])
+	}
+	events, ok := payload["events"].([]any)
+	if !ok || len(events) == 0 {
+		t.Fatalf("live monitor events missing: %#v", payload["events"])
 	}
 }
 

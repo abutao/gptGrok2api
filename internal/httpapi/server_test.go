@@ -271,6 +271,54 @@ func TestAccountListDoesNotExposeCredentialTokens(t *testing.T) {
 	}
 }
 
+func TestAccountListIncludesLiveDispatchState(t *testing.T) {
+	root := t.TempDir()
+	cfg := testConfig()
+	cfg.RootDir = root
+	cfg.DataDir = root
+	cfg.AccountsPath = filepath.Join(root, "accounts.json")
+	cfg.AuthKeysPath = filepath.Join(root, "auth_keys.json")
+	cfg.ConfigPath = filepath.Join(root, "config.json")
+	server := New(cfg)
+	if _, _, _, err := server.store.AddAccounts(nil, []map[string]any{{
+		"access_token": "live-account", "pool": "basic", "enabled": true, "status": "正常", "quota": 3,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	lease, err := server.accountPool.ReserveMatchingImageLimit(context.Background(), []string{"basic"}, nil, nil, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.accountPool.Release(lease)
+
+	request := httptest.NewRequest(http.MethodGet, "/api/accounts", nil)
+	request.Header.Set("Authorization", "Bearer admin-secret")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("account list returned %d: %s", response.Code, response.Body.String())
+	}
+	var payload struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Items) != 1 {
+		t.Fatalf("unexpected account list: %#v", payload.Items)
+	}
+	item := payload.Items[0]
+	if got := intValue(item["image_inflight"]); got != 1 {
+		t.Fatalf("expected live image inflight count 1, got %d: %#v", got, item)
+	}
+	if available, ok := item["dispatchable"].(bool); !ok || !available {
+		t.Fatalf("expected account to be dispatchable: %#v", item)
+	}
+	if stringValue(item["dispatch_reason_code"]) != "available" {
+		t.Fatalf("expected available dispatch reason, got %#v", item)
+	}
+}
+
 func TestAccountStatusCategoryIgnoresClearedMarkers(t *testing.T) {
 	account := map[string]any{
 		"status":             "正常",
@@ -334,11 +382,19 @@ func TestAccountStatusCategoryTreatsKnownExhaustedQuotaAsLimited(t *testing.T) {
 		{
 			name: "zero quota",
 			item: map[string]any{"status": "正常", "quota": 0, "image_quota_unknown": false},
-			want: "limited",
+			want: "normal",
 		},
 		{
 			name: "negative quota",
 			item: map[string]any{"status": "正常", "quota": -21, "image_quota_unknown": false},
+			want: "normal",
+		},
+		{
+			name: "confirmed remote exhausted quota",
+			item: map[string]any{
+				"status": "正常", "quota": 0, "image_quota_unknown": false,
+				"last_remote_check_status": "limited",
+			},
 			want: "limited",
 		},
 		{

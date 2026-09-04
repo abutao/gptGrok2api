@@ -10,6 +10,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -245,6 +246,47 @@ func TestParseImageEditRequestReportsMissingMultipartBoundary(t *testing.T) {
 	_, err := server.parseImageEditRequest(request)
 	if err == nil || !strings.Contains(err.Error(), "missing boundary") {
 		t.Fatalf("expected missing boundary error, got %v", err)
+	}
+}
+
+func TestParseImageEditRequestAcceptsJSONWhenMultipartContentTypeWasStripped(t *testing.T) {
+	server := &Server{}
+	body := `{"model":"grok-imagine-image-edit","prompt":"修图","image_url":"data:image/png;base64,` + base64.StdEncoding.EncodeToString(tinyPNG) + `"}`
+	request := httptest.NewRequest(http.MethodPost, "/v1/images/edits", strings.NewReader(body))
+	request.Header.Set("Content-Type", "multipart/form-data")
+
+	parsed, err := server.parseImageEditRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Prompt != "修图" || len(parsed.Inputs) != 1 || len(parsed.Inputs[0].Data) != len(tinyPNG) {
+		t.Fatalf("unexpected parsed request: %#v", parsed)
+	}
+}
+
+func TestParseImageEditRequestAcceptsURLFormImageReference(t *testing.T) {
+	server := &Server{}
+	body := "model=grok-imagine-image-edit&prompt=%E4%BF%AE%E5%9B%BE&image_url=" + url.QueryEscape("data:image/png;base64,"+base64.StdEncoding.EncodeToString(tinyPNG))
+	request := httptest.NewRequest(http.MethodPost, "/v1/images/edits", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	parsed, err := server.parseImageEditRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Prompt != "修图" || len(parsed.Inputs) != 1 || len(parsed.Inputs[0].Data) != len(tinyPNG) {
+		t.Fatalf("unexpected parsed request: %#v", parsed)
+	}
+}
+
+func TestParseImageEditRequestReportsTruncatedMultipart(t *testing.T) {
+	server := &Server{}
+	request := httptest.NewRequest(http.MethodPost, "/v1/images/edits", strings.NewReader("--boundary\r\nContent-Disposition: form-data; name=prompt\r\n\r\n修图\r\n--boundary"))
+	request.Header.Set("Content-Type", "multipart/form-data; boundary=boundary")
+
+	_, err := server.parseImageEditRequest(request)
+	if err == nil || !strings.Contains(err.Error(), "truncated") {
+		t.Fatalf("expected truncated multipart diagnostic, got %v", err)
 	}
 }
 
