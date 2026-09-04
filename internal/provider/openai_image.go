@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -20,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -240,14 +242,15 @@ func (o *OpenAIImage) Generate(ctx context.Context, account accounts.Account, pr
 	if conversationID == "" && len(imageRefs) == 0 {
 		return nil, fmt.Errorf("OpenAI image stream returned no conversation id")
 	}
-	if len(imageRefs) == 0 {
-		if conversationID == "" {
-			return nil, fmt.Errorf("OpenAI image generation returned no downloadable files")
-		}
+	// The create stream can echo uploaded reference assets before the generated
+	// output is committed. Resolve the final conversation whenever possible.
+	if conversationID != "" {
 		stageStarted = time.Now()
-		imageRefs, err = o.pollConversation(ctx, account, conversationID)
-		if err != nil {
-			return nil, err
+		finalRefs, pollErr := o.pollConversation(ctx, account, conversationID)
+		if pollErr == nil {
+			imageRefs = finalRefs
+		} else if len(inputs) > 0 || len(imageRefs) == 0 {
+			return nil, pollErr
 		}
 		notifyOpenAIImageStage(ctx, "resolve_ms", stageStarted)
 	}
@@ -257,13 +260,22 @@ func (o *OpenAIImage) Generate(ctx context.Context, account accounts.Account, pr
 	results = make([]ImageResult, 0, len(imageRefs))
 	seen := map[string]bool{}
 	inputFileIDs := map[string]bool{}
+	inputContentHashes := map[[sha256.Size]byte]bool{}
 	var lastDownloadErr error
 	for _, ref := range references {
 		if ref.FileID != "" {
 			inputFileIDs[ref.FileID] = true
 		}
 	}
-	for _, imageRef := range imageRefs {
+	for _, input := range inputs {
+		if len(input.Data) > 0 {
+			inputContentHashes[sha256.Sum256(input.Data)] = true
+		}
+	}
+	// Generated assets are normally emitted after inputs. Prefer newer refs
+	// while retaining the ID and content filters below for echoed references.
+	for index := len(imageRefs) - 1; index >= 0; index-- {
+		imageRef := imageRefs[index]
 		fileID := strings.TrimPrefix(imageRef, "file-service://")
 		// The upstream SSE/poll response can echo uploaded reference assets.
 		// Those are inputs, not generated outputs, and must never be returned or
@@ -276,6 +288,9 @@ func (o *OpenAIImage) Generate(ctx context.Context, account accounts.Account, pr
 		raw, mime, err := o.downloadImageRefWithRetry(ctx, account, conversationID, imageRef)
 		if err != nil {
 			lastDownloadErr = err
+			continue
+		}
+		if inputContentHashes[sha256.Sum256(raw)] {
 			continue
 		}
 		notifyOpenAIImageStage(ctx, "download_ms", downloadStarted)
@@ -325,7 +340,7 @@ func (o *OpenAIImage) recoverImageDownload(ctx context.Context, account accounts
 			if err == nil {
 				var polledConversationID string
 				polledRefs := []string{}
-				collectOpenAIImageRefs(value, &polledConversationID, &polledRefs)
+				collectOpenAIGeneratedImageRefs(value, &polledConversationID, &polledRefs)
 				refs = append(refs, polledRefs...)
 			}
 		}
@@ -680,7 +695,12 @@ func (o *OpenAIImage) pollConversation(ctx context.Context, account accounts.Acc
 		if err == nil {
 			id := ""
 			ids := []string{}
-			collectOpenAIImageRefs(value, &id, &ids)
+			collectOpenAIGeneratedImageRefs(value, &id, &ids)
+			// Compatibility: older conversation payloads may not use a mapping
+			// wrapper. Apply the legacy collector only when no mapping exists.
+			if len(ids) == 0 && !openAIConversationHasMapping(value) {
+				collectOpenAIImageRefs(value, &id, &ids)
+			}
 			if len(ids) > 0 {
 				ids = uniqueStrings(ids)
 				hitKey := strings.Join(ids, "\x00")
@@ -722,6 +742,15 @@ func (o *OpenAIImage) pollConversation(ctx context.Context, account accounts.Acc
 		message += " (last poll error: " + openAIImagePollErrorSummary(lastErr) + ")"
 	}
 	return nil, &protocol.UpstreamError{Status: http.StatusGatewayTimeout, Message: message, Body: message}
+}
+
+func openAIConversationHasMapping(value any) bool {
+	root, ok := value.(map[string]any)
+	if !ok {
+		return false
+	}
+	_, ok = root["mapping"]
+	return ok
 }
 
 func openAIImagePollBackoff(attempt int, retryAfter time.Duration, hasRetryAfter bool) time.Duration {
@@ -1423,6 +1452,144 @@ func collectOpenAIImageRefs(value any, conversationID *string, imageRefs *[]stri
 		}
 	}
 	walk(value)
+}
+
+type openAIImageOutputRecord struct {
+	messageID string
+	createdAt float64
+	refs      []string
+}
+
+// collectOpenAIGeneratedImageRefs limits final conversation results to tool and
+// assistant records. User records contain uploaded reference images and must
+// never be returned as generated output.
+func collectOpenAIGeneratedImageRefs(value any, conversationID *string, imageRefs *[]string) {
+	collectOpenAIConversationID(value, conversationID)
+	root, ok := value.(map[string]any)
+	if !ok {
+		return
+	}
+	mapping, ok := root["mapping"].(map[string]any)
+	if !ok {
+		return
+	}
+	records := make([]openAIImageOutputRecord, 0, len(mapping))
+	for messageID, rawNode := range mapping {
+		node, ok := rawNode.(map[string]any)
+		if !ok {
+			continue
+		}
+		message, ok := node["message"].(map[string]any)
+		if !ok {
+			// Older conversation responses put the message object directly under
+			// mapping. Keep that shape compatible with the newer node wrapper.
+			if _, hasAuthor := node["author"]; !hasAuthor {
+				continue
+			}
+			message = node
+		}
+		author, _ := message["author"].(map[string]any)
+		role := strings.ToLower(strings.TrimSpace(stringValue(author["role"])))
+		if role != "tool" && role != "assistant" {
+			continue
+		}
+		content := message["content"]
+		metadata := message["metadata"]
+		refs := []string{}
+		if role == "assistant" {
+			if !hasOpenAIImageAssetPointer(content) && !hasOpenAIImageAssetPointer(metadata) {
+				continue
+			}
+			collectOpenAIAssetPointerRefs(content, &refs)
+			collectOpenAIAssetPointerRefs(metadata, &refs)
+		} else {
+			collectOpenAIImageReferenceValues(map[string]any{"content": content, "metadata": metadata}, &refs)
+		}
+		refs = uniqueStrings(refs)
+		filtered := refs[:0]
+		for _, ref := range refs {
+			if strings.TrimSpace(ref) != "file_upload" {
+				filtered = append(filtered, ref)
+			}
+		}
+		if len(filtered) == 0 {
+			continue
+		}
+		createdAt := openAIImageNumberValue(message["create_time"])
+		records = append(records, openAIImageOutputRecord{messageID: messageID, createdAt: createdAt, refs: filtered})
+	}
+	sort.Slice(records, func(i, j int) bool {
+		if records[i].createdAt == records[j].createdAt {
+			return records[i].messageID < records[j].messageID
+		}
+		return records[i].createdAt < records[j].createdAt
+	})
+	for _, record := range records {
+		*imageRefs = append(*imageRefs, record.refs...)
+	}
+}
+
+func collectOpenAIConversationID(value any, conversationID *string) {
+	if *conversationID != "" {
+		return
+	}
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, item := range typed {
+			normalized := strings.ToLower(strings.TrimSpace(key))
+			if normalized == "conversation_id" || normalized == "conversationid" || normalized == "conversation-id" {
+				*conversationID = stringValue(item)
+				if *conversationID != "" {
+					return
+				}
+			}
+			collectOpenAIConversationID(item, conversationID)
+		}
+	case []any:
+		for _, item := range typed {
+			collectOpenAIConversationID(item, conversationID)
+		}
+	}
+}
+
+func collectOpenAIAssetPointerRefs(value any, imageRefs *[]string) {
+	switch typed := value.(type) {
+	case map[string]any:
+		pointer := strings.TrimSpace(stringValue(typed["asset_pointer"]))
+		if strings.HasPrefix(pointer, "file-service://") {
+			*imageRefs = append(*imageRefs, strings.TrimPrefix(pointer, "file-service://"))
+		} else if strings.HasPrefix(pointer, "sediment://") {
+			*imageRefs = append(*imageRefs, pointer)
+		}
+		for _, item := range typed {
+			collectOpenAIAssetPointerRefs(item, imageRefs)
+		}
+	case []any:
+		for _, item := range typed {
+			collectOpenAIAssetPointerRefs(item, imageRefs)
+		}
+	}
+}
+
+func openAIImageNumberValue(value any) float64 {
+	switch typed := value.(type) {
+	case float64:
+		return typed
+	case float32:
+		return float64(typed)
+	case int:
+		return float64(typed)
+	case int64:
+		return float64(typed)
+	case json.Number:
+		parsed, _ := typed.Float64()
+		return parsed
+	case string:
+		parsed, _ := strconv.ParseFloat(strings.TrimSpace(typed), 64)
+		return parsed
+	default:
+		return 0
+	}
 }
 
 func isOpenAIConversationMessage(value map[string]any) bool {

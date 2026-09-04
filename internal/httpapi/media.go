@@ -313,9 +313,13 @@ func (s *Server) generateOpenAIImageData(r *http.Request, ctx context.Context, p
 					break
 				}
 				if resolveErr != nil {
-					s.accountPool.Feedback(lease.Account, upstreamStatus(resolveErr), resolveErr)
+					// Generate already completed upstream and synchronously recorded the
+					// consumed image quota. Resolve only persists the returned bytes
+					// locally, so a failure here is a delivery/storage failure rather than
+					// evidence that this account or its credentials are unhealthy. Do not
+					// increment account failures, exclude the account, or regenerate on a
+					// different account.
 					s.accountPool.Release(lease)
-					excluded[lease.Account.Token] = true
 					s.stageRequestMonitor(r, "image_attempt_failed", 85, map[string]any{
 						"worker_index":    index,
 						"worker_count":    count,
@@ -324,9 +328,6 @@ func (s *Server) generateOpenAIImageData(r *http.Request, ctx context.Context, p
 						"error":           resolveErr.Error(),
 						"upstream_status": upstreamStatus(resolveErr),
 					})
-					if s.shouldRetry(upstreamStatus(resolveErr), attempt) {
-						continue
-					}
 					sendErr(resolveErr)
 					cancel()
 					return

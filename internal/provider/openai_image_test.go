@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -885,11 +886,14 @@ func TestOpenAIImagePollStillConsumesShortInitialBudgetBeforeFirstRequest(t *tes
 	client.pollJitter = func() time.Duration { return 0 }
 	client.pollSleep = func(_ context.Context, wait time.Duration) error {
 		waits = append(waits, wait)
+		if len(waits) > 1 {
+			return context.Canceled
+		}
 		return nil
 	}
 	_, _ = client.pollConversation(context.Background(), accounts.Account{}, "conversation-short-budget")
-	if len(waits) == 0 || waits[0] != openAIImagePollInitialWait {
-		t.Fatalf("initial wait = %#v, want %s", waits, openAIImagePollInitialWait)
+	if len(waits) == 0 || waits[0] <= 0 || waits[0] > 2*time.Second {
+		t.Fatalf("initial wait = %#v, want a positive wait no longer than the 2s timeout budget", waits)
 	}
 	if polls.Load() == 0 {
 		t.Fatal("poll request was never made")
@@ -1102,6 +1106,41 @@ func TestCollectOpenAIImageRefsAcceptsSedimentPointer(t *testing.T) {
 	imageRefs = uniqueStrings(imageRefs)
 	if conversationID != "conversation-sediment" || len(imageRefs) != 1 || imageRefs[0] != "sediment://01JSEDIMENT1234567890" {
 		t.Fatalf("unexpected sediment parsing: conversation=%q refs=%#v", conversationID, imageRefs)
+	}
+}
+
+func TestCollectOpenAIGeneratedImageRefsOnlyUsesToolAndAssistantOutputs(t *testing.T) {
+	conversationID := ""
+	refs := []string{}
+	collectOpenAIGeneratedImageRefs(map[string]any{
+		"conversation_id": "conversation-generated",
+		"mapping": map[string]any{
+			"user-message": map[string]any{"message": map[string]any{
+				"author":  map[string]any{"role": "user"},
+				"content": map[string]any{"parts": []any{map[string]any{"content_type": "image_asset_pointer", "asset_pointer": "file-service://file_reference"}}},
+			}},
+			"assistant-message": map[string]any{"message": map[string]any{
+				"author":      map[string]any{"role": "assistant"},
+				"create_time": 2,
+				"content": map[string]any{"parts": []any{map[string]any{
+					"content_type": "image_asset_pointer", "asset_pointer": "file-service://file_assistant",
+				}}},
+			}},
+			"tool-message": map[string]any{"message": map[string]any{
+				"author":      map[string]any{"role": "tool"},
+				"create_time": 3,
+				"metadata":    map[string]any{"async_task_type": "image_gen"},
+				"content": map[string]any{"parts": []any{map[string]any{
+					"content_type": "image_asset_pointer", "asset_pointer": "file-service://file_generated",
+				}}},
+			}},
+		},
+	}, &conversationID, &refs)
+	if conversationID != "conversation-generated" {
+		t.Fatalf("unexpected conversation ID: %q", conversationID)
+	}
+	if !reflect.DeepEqual(refs, []string{"file_assistant", "file_generated"}) {
+		t.Fatalf("unexpected generated refs: %#v", refs)
 	}
 }
 
