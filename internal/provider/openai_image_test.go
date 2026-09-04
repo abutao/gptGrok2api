@@ -1144,6 +1144,30 @@ func TestCollectOpenAIGeneratedImageRefsOnlyUsesToolAndAssistantOutputs(t *testi
 	}
 }
 
+func TestCollectOpenAIGeneratedImageRefsAcceptsAssistantFileIDWithoutAssetPointer(t *testing.T) {
+	conversationID := ""
+	refs := []string{}
+	generatedFileID := "file_000000001234567890abcdef12345678"
+	collectOpenAIGeneratedImageRefs(map[string]any{
+		"conversation_id": "conversation-assistant-file-id",
+		"mapping": map[string]any{
+			"assistant-message": map[string]any{"message": map[string]any{
+				"author":      map[string]any{"role": "assistant"},
+				"create_time": 2,
+				"content": map[string]any{"parts": []any{map[string]any{
+					"file_id": generatedFileID,
+				}}},
+			}},
+		},
+	}, &conversationID, &refs)
+	if conversationID != "conversation-assistant-file-id" {
+		t.Fatalf("unexpected conversation ID: %q", conversationID)
+	}
+	if !reflect.DeepEqual(refs, []string{generatedFileID}) {
+		t.Fatalf("assistant file ID was not recovered: %#v", refs)
+	}
+}
+
 func onePixelPNG(t *testing.T) []byte {
 	t.Helper()
 	var buffer bytes.Buffer

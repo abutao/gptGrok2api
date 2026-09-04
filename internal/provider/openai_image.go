@@ -1496,15 +1496,11 @@ func collectOpenAIGeneratedImageRefs(value any, conversationID *string, imageRef
 		content := message["content"]
 		metadata := message["metadata"]
 		refs := []string{}
-		if role == "assistant" {
-			if !hasOpenAIImageAssetPointer(content) && !hasOpenAIImageAssetPointer(metadata) {
-				continue
-			}
-			collectOpenAIAssetPointerRefs(content, &refs)
-			collectOpenAIAssetPointerRefs(metadata, &refs)
-		} else {
-			collectOpenAIImageReferenceValues(map[string]any{"content": content, "metadata": metadata}, &refs)
-		}
+		// Assistant output records can expose the generated asset as a
+		// file_id or sediment reference without an image_asset_pointer.
+		// The role boundary already excludes uploaded user inputs, so use
+		// the same reference collector as tool records here.
+		collectOpenAIImageReferenceValues(map[string]any{"content": content, "metadata": metadata}, &refs)
 		refs = uniqueStrings(refs)
 		filtered := refs[:0]
 		for _, ref := range refs {
