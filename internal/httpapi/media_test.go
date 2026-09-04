@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -279,14 +280,139 @@ func TestParseImageEditRequestAcceptsURLFormImageReference(t *testing.T) {
 	}
 }
 
-func TestParseImageEditRequestReportsTruncatedMultipart(t *testing.T) {
+func TestParseImageEditRequestAcceptsMultipartWithoutClosingBoundary(t *testing.T) {
 	server := &Server{}
-	request := httptest.NewRequest(http.MethodPost, "/v1/images/edits", strings.NewReader("--boundary\r\nContent-Disposition: form-data; name=prompt\r\n\r\n修图\r\n--boundary"))
+	body := "--boundary\r\nContent-Disposition: form-data; name=prompt\r\n\r\n修图\r\n--boundary"
+	request := httptest.NewRequest(http.MethodPost, "/v1/images/edits", strings.NewReader(body))
 	request.Header.Set("Content-Type", "multipart/form-data; boundary=boundary")
+
+	parsed, diagnostics, err := server.parseImageEditRequestWithDiagnostics(request)
+	if err != nil {
+		t.Fatalf("expected Python-compatible multipart parsing, got %v (diagnostics=%+v)", err, diagnostics)
+	}
+	if parsed.Prompt != "修图" {
+		t.Fatalf("expected prompt to survive missing closing boundary, got %q", parsed.Prompt)
+	}
+}
+
+func TestParseImageEditRequestAcceptsMultipleImagesWithoutClosingBoundary(t *testing.T) {
+	server := &Server{}
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	_ = writer.WriteField("model", "grok-imagine-image-edit")
+	_ = writer.WriteField("prompt", "多图修图")
+	for _, name := range []string{"one.png", "two.png"} {
+		part, err := writer.CreateFormFile("image[]", name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := part.Write(tinyPNG); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	raw := bytes.TrimSuffix(body.Bytes(), []byte("--"+writer.Boundary()+"--\r\n"))
+	request := httptest.NewRequest(http.MethodPost, "/v1/images/edits", bytes.NewReader(raw))
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+
+	parsed, err := server.parseImageEditRequest(request)
+	if err != nil {
+		t.Fatalf("expected multiple images to survive missing closing boundary, got %v", err)
+	}
+	if len(parsed.Inputs) != 2 || parsed.Inputs[0].Name != "one.png" || parsed.Inputs[1].Name != "two.png" {
+		t.Fatalf("unexpected parsed images: %#v", parsed.Inputs)
+	}
+}
+
+func TestMonitorMultipartInspectionDoesNotReadRequestBody(t *testing.T) {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	_ = writer.WriteField("model", "grok-imagine-image-edit")
+	_ = writer.WriteField("prompt", "监控后继续解析")
+	part, err := writer.CreateFormFile("image[]", "source.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(tinyPNG); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/images/edits", nil)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	request.Body = &countingReadCloser{Reader: bytes.NewReader(body.Bytes())}
+	request.ContentLength = int64(body.Len())
+
+	model, summary, shape := monitorRequestShape(request)
+	if model != "" || summary != "" || shape != "multipart/form-data" {
+		t.Fatalf("unexpected body-free monitor result: model=%q summary=%q shape=%#v", model, summary, shape)
+	}
+	if request.Body.(*countingReadCloser).reads != 0 {
+		t.Fatalf("monitor must not consume multipart request bodies, read %d times", request.Body.(*countingReadCloser).reads)
+	}
+}
+
+type countingReadCloser struct {
+	io.Reader
+	reads int
+}
+
+func (r *countingReadCloser) Read(p []byte) (int, error) {
+	r.reads++
+	return r.Reader.Read(p)
+}
+
+func (r *countingReadCloser) Close() error { return nil }
+
+func TestParseImageEditRequestRejectsMultipartWithMissingBytes(t *testing.T) {
+	server := &Server{}
+	body := "--boundary\r\nContent-Disposition: form-data; name=prompt\r\n\r\n修图"
+	request := httptest.NewRequest(http.MethodPost, "/v1/images/edits", strings.NewReader(body))
+	request.Header.Set("Content-Type", "multipart/form-data; boundary=boundary")
+	request.ContentLength = int64(len(body) + 32)
 
 	_, err := server.parseImageEditRequest(request)
 	if err == nil || !strings.Contains(err.Error(), "truncated") {
 		t.Fatalf("expected truncated multipart diagnostic, got %v", err)
+	}
+}
+
+func TestMultipartFormCleanupRemovesParserTempFiles(t *testing.T) {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("image[]", "source.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(bytes.Repeat([]byte("x"), 1024)); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/images/edits", &body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	if err := request.ParseMultipartForm(1); err != nil {
+		t.Fatal(err)
+	}
+	if err := cleanupMultipartForm(request.MultipartForm); err != nil {
+		t.Fatalf("cleanup failed: %v", err)
+	}
+}
+
+func TestParseMultipartFormCompatRestoresContentLengthAfterRecovery(t *testing.T) {
+	body := "--boundary\r\nContent-Disposition: form-data; name=prompt\r\n\r\n修图\r\n--boundary"
+	request := httptest.NewRequest(http.MethodPost, "/v1/images/edits", strings.NewReader(body))
+	request.Header.Set("Content-Type", "multipart/form-data; boundary=boundary")
+	originalLength := request.ContentLength
+	if _, _, err := parseMultipartFormCompat(request, 64<<20); err != nil {
+		t.Fatal(err)
+	}
+	if request.ContentLength != originalLength {
+		t.Fatalf("expected ContentLength %d after recovery, got %d", originalLength, request.ContentLength)
 	}
 }
 

@@ -55,6 +55,168 @@ type imageEditParseError struct {
 	Status  int
 }
 
+const maxMultipartBodyBytes = 256 << 20
+
+type multipartParseDiagnostics struct {
+	DeclaredBytes  int64
+	ReceivedBytes  int
+	BoundaryClosed bool
+	Recovered      bool
+	ReadError      string
+}
+
+func parseMultipartFormCompat(r *http.Request, maxMemory int64) (*multipart.Form, multipartParseDiagnostics, error) {
+	var diagnostics multipartParseDiagnostics
+	if r == nil || r.Body == nil {
+		return nil, diagnostics, io.ErrUnexpectedEOF
+	}
+	if r.MultipartForm != nil {
+		return r.MultipartForm, diagnostics, nil
+	}
+	diagnostics.DeclaredBytes = r.ContentLength
+	if r.ContentLength > maxMultipartBodyBytes {
+		return nil, diagnostics, fmt.Errorf("multipart body exceeds %d bytes", maxMultipartBodyBytes)
+	}
+	temp, err := os.CreateTemp("", "gptgrok2api-multipart-*")
+	if err != nil {
+		return nil, diagnostics, fmt.Errorf("create multipart spool: %w", err)
+	}
+	tempPath := temp.Name()
+	defer os.Remove(tempPath)
+	defer temp.Close()
+	_, params, mediaTypeErr := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	boundary := ""
+	if mediaTypeErr == nil {
+		boundary = params["boundary"]
+	}
+	if boundary == "" {
+		return nil, diagnostics, fmt.Errorf("multipart: missing boundary")
+	}
+	originalBody := r.Body
+	originalLength := r.ContentLength
+	defer func() { r.ContentLength = originalLength }()
+	r.Body = &multipartSpoolBody{
+		Reader: io.TeeReader(io.LimitReader(originalBody, maxMultipartBodyBytes+1), temp),
+		closer: originalBody,
+	}
+	r.MultipartForm = nil
+	parseErr := r.ParseMultipartForm(maxMemory)
+	info, statErr := temp.Stat()
+	if statErr != nil {
+		return nil, diagnostics, fmt.Errorf("inspect multipart spool: %w", statErr)
+	}
+	received := info.Size()
+	diagnostics.ReceivedBytes = int(received)
+	if received > maxMultipartBodyBytes {
+		return nil, diagnostics, fmt.Errorf("multipart body exceeds %d bytes", maxMultipartBodyBytes)
+	}
+	diagnostics.BoundaryClosed = multipartTempBoundaryClosed(temp, received, boundary)
+	if parseErr == nil {
+		return r.MultipartForm, diagnostics, nil
+	}
+	if r.ContentLength >= 0 && received < r.ContentLength {
+		return nil, diagnostics, io.ErrUnexpectedEOF
+	}
+	if !multipartBodyTruncated(parseErr) || boundary == "" || diagnostics.BoundaryClosed {
+		return nil, diagnostics, parseErr
+	}
+	_ = cleanupMultipartForm(r.MultipartForm)
+	r.MultipartForm = nil
+
+	diagnostics.Recovered = true
+	suffix := multipartClosingSuffix(boundary)
+	if multipartTempEndsWithMarker(temp, received, boundary) {
+		suffix = "--\r\n"
+	}
+	recoveryFile, openErr := os.Open(tempPath)
+	if openErr != nil {
+		return nil, diagnostics, parseErr
+	}
+	defer recoveryFile.Close()
+	r.Body = &multipartRecoveryReader{Reader: io.MultiReader(recoveryFile, strings.NewReader(suffix))}
+	r.ContentLength = received + int64(len(suffix))
+	r.MultipartForm = nil
+	recoveredErr := r.ParseMultipartForm(maxMemory)
+	if recoveredErr != nil {
+		return nil, diagnostics, fmt.Errorf("%w (recovery: %v)", parseErr, recoveredErr)
+	}
+	return r.MultipartForm, diagnostics, nil
+}
+
+func multipartClosingSuffix(boundary string) string {
+	return "\r\n--" + boundary + "--\r\n"
+}
+
+type multipartRecoveryReader struct{ io.Reader }
+
+func (r *multipartRecoveryReader) Close() error { return nil }
+
+type multipartSpoolBody struct {
+	io.Reader
+	closer io.Closer
+}
+
+func cleanupMultipartForm(form *multipart.Form) error {
+	if form == nil {
+		return nil
+	}
+	return form.RemoveAll()
+}
+
+func (r *multipartSpoolBody) Close() error {
+	if r == nil || r.closer == nil {
+		return nil
+	}
+	return r.closer.Close()
+}
+
+func multipartTempBoundaryClosed(file *os.File, size int64, boundary string) bool {
+	if boundary == "" || size <= 0 {
+		return false
+	}
+	const tailSize = 512
+	readSize := int64(tailSize)
+	if size < readSize {
+		readSize = size
+	}
+	if _, err := file.Seek(size-readSize, io.SeekStart); err != nil {
+		return false
+	}
+	tail := make([]byte, readSize)
+	n, err := io.ReadFull(file, tail)
+	if err != nil && err != io.ErrUnexpectedEOF {
+		return false
+	}
+	return multipartBoundaryClosed(tail[:n], boundary)
+}
+
+func multipartTempEndsWithMarker(file *os.File, size int64, boundary string) bool {
+	if boundary == "" || size <= 0 {
+		return false
+	}
+	marker := []byte("--" + boundary)
+	readSize := int64(len(marker))
+	if size < readSize {
+		return false
+	}
+	if _, err := file.Seek(size-readSize, io.SeekStart); err != nil {
+		return false
+	}
+	tail := make([]byte, readSize)
+	if _, err := io.ReadFull(file, tail); err != nil {
+		return false
+	}
+	return bytes.Equal(tail, marker)
+}
+
+func multipartBoundaryClosed(raw []byte, boundary string) bool {
+	if boundary == "" {
+		return false
+	}
+	trimmed := bytes.TrimRight(raw, "\r\n")
+	return bytes.HasSuffix(trimmed, []byte("--"+boundary+"--"))
+}
+
 func (e imageEditParseError) Error() string { return e.Message }
 
 func (s *Server) imageGenerations(w http.ResponseWriter, r *http.Request) {
@@ -374,26 +536,43 @@ func imageRequestTotalTimeout(requestTimeout time.Duration) time.Duration {
 }
 
 func (s *Server) parseImageEditRequest(r *http.Request) (imageEditRequest, error) {
+	request, _, err := s.parseImageEditRequestWithDiagnostics(r)
+	return request, err
+}
+
+func (s *Server) parseImageEditRequestWithDiagnostics(r *http.Request) (imageEditRequest, multipartParseDiagnostics, error) {
+	var diagnostics multipartParseDiagnostics
 	contentType := strings.ToLower(strings.TrimSpace(strings.Split(r.Header.Get("Content-Type"), ";")[0]))
 	if contentType == "application/json" {
-		return s.parseJSONImageEditRequest(r)
+		request, err := s.parseJSONImageEditRequest(r)
+		return request, diagnostics, err
 	}
 	if contentType == "application/x-www-form-urlencoded" {
 		if err := r.ParseForm(); err != nil {
-			return imageEditRequest{}, imageEditParseError{Message: "invalid form body: " + err.Error()}
+			return imageEditRequest{}, diagnostics, imageEditParseError{Message: "invalid form body: " + err.Error()}
 		}
-		return s.parseImageEditForm(r.Context(), r.Form, nil)
+		request, err := s.parseImageEditForm(r.Context(), r.Form, nil)
+		return request, diagnostics, err
 	}
 	if contentType != "multipart/form-data" && contentType != "" {
-		return imageEditRequest{}, imageEditParseError{Message: "Content-Type must be multipart/form-data or application/json"}
+		return imageEditRequest{}, diagnostics, imageEditParseError{Message: "Content-Type must be multipart/form-data or application/json"}
 	}
-	if err := r.ParseMultipartForm(64 << 20); err != nil {
+	// Preserve the Python implementation's gateway compatibility for a JSON
+	// body whose multipart media type lost its boundary parameter, without
+	// buffering normal multipart uploads in memory.
+	if contentType == "multipart/form-data" && !strings.Contains(r.Header.Get("Content-Type"), "boundary=") && bodyLooksLikeJSON(r) {
+		request, jsonErr := s.parseJSONImageEditRequest(r)
+		return request, diagnostics, jsonErr
+	}
+	form, diagnostics, err := parseMultipartFormCompat(r, 64<<20)
+	if err != nil {
 		// A few gateways preserve the multipart media type while forwarding a
 		// JSON body and dropping its boundary parameter. The body is still
 		// unambiguous in this case, so accept it using the same JSON parser as
 		// the reference implementation. Never guess a multipart boundary.
 		if missingMultipartBoundary(err) && bodyLooksLikeJSON(r) {
-			return s.parseJSONImageEditRequest(r)
+			request, jsonErr := s.parseJSONImageEditRequest(r)
+			return request, diagnostics, jsonErr
 		}
 		message := "invalid multipart form"
 		if missingMultipartBoundary(err) {
@@ -401,9 +580,11 @@ func (s *Server) parseImageEditRequest(r *http.Request) (imageEditRequest, error
 		} else if multipartBodyTruncated(err) {
 			message = "invalid multipart form: request body is truncated"
 		}
-		return imageEditRequest{}, imageEditParseError{Message: message}
+		return imageEditRequest{}, diagnostics, imageEditParseError{Message: message}
 	}
-	return s.parseImageEditForm(r.Context(), r.MultipartForm.Value, r.MultipartForm)
+	request, err := s.parseImageEditForm(r.Context(), form.Value, form)
+	_ = cleanupMultipartForm(form)
+	return request, diagnostics, err
 }
 
 func (s *Server) parseImageEditForm(ctx context.Context, values map[string][]string, form *multipart.Form) (imageEditRequest, error) {
@@ -846,8 +1027,33 @@ func (s *Server) imageEdits(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.stageRequestMonitor(r, "handler_queue_done", 10, nil)
-	request, err := s.parseImageEditRequest(r)
+	request, diagnostics, err := s.parseImageEditRequestWithDiagnostics(r)
+	s.enrichRequestMonitor(r, map[string]any{
+		"model": request.Model,
+		"request_meta": map[string]any{
+			"size":            request.Size,
+			"image_url_parts": len(request.Inputs),
+			"data_url_images": len(request.Inputs),
+			"requested_n":     request.N,
+			"declared_bytes":  diagnostics.DeclaredBytes,
+			"received_bytes":  diagnostics.ReceivedBytes,
+			"boundary_closed": diagnostics.BoundaryClosed,
+			"recovered":       diagnostics.Recovered,
+		},
+	})
+	if request.Prompt != "" {
+		s.enrichRequestMonitor(r, map[string]any{"summary": request.Prompt})
+	}
 	if err != nil {
+		if diagnostics.DeclaredBytes > 0 || diagnostics.ReceivedBytes > 0 {
+			s.enrichRequestMonitor(r, map[string]any{"multipart_diagnostics": map[string]any{
+				"declared_bytes":  diagnostics.DeclaredBytes,
+				"received_bytes":  diagnostics.ReceivedBytes,
+				"boundary_closed": diagnostics.BoundaryClosed,
+				"recovered":       diagnostics.Recovered,
+				"read_error":      diagnostics.ReadError,
+			}})
+		}
 		status := http.StatusBadRequest
 		var parseError imageEditParseError
 		if errors.As(err, &parseError) && parseError.Status >= 400 {

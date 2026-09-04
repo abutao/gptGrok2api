@@ -757,7 +757,6 @@ func (s *Store) rotateAccountTokens(oldToken, newToken, refreshToken, idToken st
 	updates["last_token_refresh_error"] = nil
 	updates["last_token_refresh_error_at"] = nil
 	updates["next_token_refresh_at"] = nil
-	updates["image_quota_pending_confirmation"] = nil
 	updates["invalid_count"] = 0
 	updates["cooldown_until"] = nil
 	updates["next_retry_at"] = nil
@@ -783,6 +782,19 @@ func (s *Store) rotateAccountTokens(oldToken, newToken, refreshToken, idToken st
 	}
 	if expected != nil && credentialGeneration(resolved, s.accountsCache[index]) != *expected {
 		return cloneMap(s.accountsCache[index]), cloneAccountList(s.accountsCache), false, nil
+	}
+	current := s.accountsCache[index]
+	pendingQuota := nonNegativeAccountCount(current["quota"]) <= 0 && (
+		boolValue(current["image_quota_pending_confirmation"], false) ||
+			stringValue(current["status_reason_code"]) == "image_quota_pending_confirmation")
+	if pendingQuota {
+		updates["quota"] = 0
+		updates["status"] = "限流"
+		updates["status_reason_code"] = "image_quota_pending_confirmation"
+		updates["image_quota_pending_confirmation"] = true
+		if currentStatus := stringValue(current["status"]); currentStatus != "" {
+			updates["status"] = currentStatus
+		}
 	}
 	aliasSources := s.tokenAliasSourcesLocked(resolved)
 	accounts, next, ok := s.updatedAccountsLocked(resolved, updates)

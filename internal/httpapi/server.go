@@ -510,10 +510,21 @@ func (s *Server) enrichRequestMonitor(r *http.Request, meta map[string]any) {
 			item.RequestMeta = map[string]any{}
 		}
 		for key, value := range meta {
+			if key == "request_meta" {
+				if fields, ok := value.(map[string]any); ok {
+					for field, fieldValue := range fields {
+						item.RequestMeta[field] = fieldValue
+					}
+					continue
+				}
+			}
 			item.RequestMeta[key] = value
 		}
 		if model := stringValue(meta["model"]); model != "" {
 			item.Model = model
+		}
+		if summary := stringValue(meta["summary"]); summary != "" {
+			item.Summary = summary
 		}
 	}
 }
@@ -618,27 +629,9 @@ func monitorRequestShape(r *http.Request) (string, string, any) {
 	}
 	contentType := strings.ToLower(strings.TrimSpace(strings.Split(r.Header.Get("Content-Type"), ";")[0]))
 	if strings.HasPrefix(contentType, "multipart/form-data") {
-		if err := r.ParseMultipartForm(64 << 20); err != nil {
-			return "", "", "multipart/form-data"
-		}
-		values := r.MultipartForm.Value
-		modelName := strings.TrimSpace(firstFormValue(values, "model"))
-		summary := strings.TrimSpace(firstFormValue(values, "prompt"))
-		if summary == "" {
-			summary = strings.TrimSpace(firstFormValue(values, "input"))
-		}
-		if summary == "" {
-			summary = strings.TrimSpace(firstFormValue(values, "message"))
-		}
-		if len(summary) > 180 {
-			summary = summary[:180]
-		}
-		count := 0
-		for _, key := range imageEditReferenceFields {
-			count += len(r.MultipartForm.File[key]) + len(values[key])
-		}
-		n := positiveInt(firstFormValue(values, "n"), 1)
-		return modelName, summary, map[string]any{"content_type": "multipart/form-data", "image_url_parts": count, "data_url_images": count, "size": firstFormValue(values, "size"), "requested_n": n}
+		// Multipart bodies can carry large images. Leave body I/O to the route
+		// handler, which parses once and then enriches this monitor record.
+		return "", "", "multipart/form-data"
 	}
 	if r.Body == nil || (r.ContentLength > maxJSONBodyBytes && r.ContentLength != -1) {
 		return "", "", "application/json"

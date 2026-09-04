@@ -124,6 +124,52 @@ func TestRotateAccountTokensClearsStaleErrorMarkers(t *testing.T) {
 	}
 }
 
+func TestRotateAccountTokensPreservesPendingImageQuota(t *testing.T) {
+	root := t.TempDir()
+	repository := New(filepath.Join(root, "accounts.json"), filepath.Join(root, "auth_keys.json"), filepath.Join(root, "config.json"))
+	_, _, _, err := repository.AddAccounts(nil, []map[string]any{{
+		"access_token":                   "old-token",
+		"refresh_token":                  "old-refresh",
+		"status":                         "限流",
+		"quota":                          0,
+		"image_quota_unknown":            false,
+		"image_quota_pending_confirmation": true,
+		"status_reason_code":             "image_quota_pending_confirmation",
+		"last_quota_estimated_empty_at":   "2026-09-04T00:00:00Z",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updated, _, err := repository.RotateAccountTokens(
+		"old-token",
+		"new-token",
+		"new-refresh",
+		"",
+		map[string]any{
+			"email":              "account@example.test",
+			"status":             "正常",
+			"quota":              5,
+			"image_quota_unknown": false,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := nonNegativeAccountCount(updated["quota"]); got != 0 {
+		t.Fatalf("local exhausted quota was overwritten by remote refresh: %#v", updated)
+	}
+	if got := stringValue(updated["status"]); got != "限流" {
+		t.Fatalf("pending quota status was overwritten by remote refresh: %#v", updated)
+	}
+	if !boolValue(updated["image_quota_pending_confirmation"], false) {
+		t.Fatalf("pending confirmation marker was lost: %#v", updated)
+	}
+	if got := stringValue(updated["email"]); got != "account@example.test" {
+		t.Fatalf("remote metadata was not preserved: %#v", updated)
+	}
+}
+
 func TestRecordAccountRequestResultAccumulatesConcurrentCounts(t *testing.T) {
 	root := t.TempDir()
 	repository := New(filepath.Join(root, "accounts.json"), filepath.Join(root, "auth_keys.json"), filepath.Join(root, "config.json"))
