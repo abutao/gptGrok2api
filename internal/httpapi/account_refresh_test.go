@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,37 @@ import (
 	"github.com/auucoder/gptgrok2api-go/internal/config"
 	"github.com/auucoder/gptgrok2api-go/internal/provider"
 )
+
+func TestAccountRefreshCancelStopsRunningTask(t *testing.T) {
+	server := newAccountRefreshTestServer(t, "http://127.0.0.1.invalid")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	progressID := "refresh-cancel-test"
+	server.refreshMu.Lock()
+	server.refreshProgress[progressID] = &accountRefreshProgress{Total: 2, StatusCounts: map[string]int{}}
+	server.refreshCancels[progressID] = cancel
+	server.refreshMu.Unlock()
+
+	request := httptest.NewRequest(http.MethodPost, "/api/accounts/refresh/cancel/"+progressID, nil)
+	request.Header.Set("Authorization", "Bearer admin-secret")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("cancel returned %d: %s", response.Code, response.Body.String())
+	}
+	select {
+	case <-ctx.Done():
+	default:
+		t.Fatal("refresh context was not canceled")
+	}
+	progressResponse := httptest.NewRecorder()
+	progressRequest := httptest.NewRequest(http.MethodGet, "/api/accounts/refresh/progress/"+progressID, nil)
+	progressRequest.Header.Set("Authorization", "Bearer admin-secret")
+	server.Handler().ServeHTTP(progressResponse, progressRequest)
+	if !strings.Contains(progressResponse.Body.String(), `"canceled":true`) {
+		t.Fatalf("cancel was not reflected in progress: %s", progressResponse.Body.String())
+	}
+}
 
 func TestAccountRefreshHTTPFlowPersistsRemoteFieldsAndRedactsSecrets(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

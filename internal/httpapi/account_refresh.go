@@ -18,6 +18,7 @@ type accountRefreshProgress struct {
 	Total        int            `json:"total"`
 	Processed    int            `json:"processed"`
 	Done         bool           `json:"done"`
+	Canceled     bool           `json:"canceled,omitempty"`
 	Error        string         `json:"error,omitempty"`
 	StatusCounts map[string]int `json:"status_counts"`
 	TotalQuota   int            `json:"total_quota"`
@@ -105,8 +106,40 @@ func (s *Server) accountRefreshStart(w http.ResponseWriter, r *http.Request) {
 	}
 	s.refreshMu.Unlock()
 
-	go s.runAccountRefresh(progressID, refs)
+	ctx, cancel := context.WithCancel(context.Background())
+	s.refreshMu.Lock()
+	s.refreshCancels[progressID] = cancel
+	s.refreshMu.Unlock()
+	go s.runAccountRefresh(progressID, refs, ctx)
 	writeJSON(w, http.StatusOK, map[string]any{"progress_id": progressID})
+}
+
+func (s *Server) accountRefreshCancel(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed", "invalid_request_error")
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/api/accounts/refresh/cancel/")
+	if id == "" || strings.Contains(id, "/") {
+		writeError(w, http.StatusNotFound, "progress not found", "not_found")
+		return
+	}
+	s.refreshMu.Lock()
+	cancel, ok := s.refreshCancels[id]
+	progress := s.refreshProgress[id]
+	if ok && progress != nil {
+		progress.Canceled = true
+	}
+	s.refreshMu.Unlock()
+	if !ok || progress == nil {
+		writeError(w, http.StatusNotFound, "refresh task not found or already finished", "not_found")
+		return
+	}
+	cancel()
+	writeJSON(w, http.StatusOK, map[string]any{"canceled": true, "progress_id": id})
 }
 
 func (s *Server) accountRefreshProgressAPI(w http.ResponseWriter, r *http.Request) {
@@ -138,8 +171,7 @@ func (s *Server) accountRefreshProgressAPI(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, progress)
 }
 
-func (s *Server) runAccountRefresh(progressID string, refs []string) {
-	ctx := context.Background()
+func (s *Server) runAccountRefresh(progressID string, refs []string, ctx context.Context) {
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, accountRefreshConcurrency())
 	for _, ref := range refs {
@@ -147,8 +179,18 @@ func (s *Server) runAccountRefresh(progressID string, refs []string) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			sem <- struct{}{}
+			if ctx.Err() != nil {
+				return
+			}
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
 			defer func() { <-sem }()
+			if ctx.Err() != nil {
+				return
+			}
 			s.refreshOneAccount(ctx, progressID, ref)
 		}()
 	}
@@ -168,6 +210,10 @@ func (s *Server) runAccountRefresh(progressID string, refs []string) {
 		progress.Result = result
 		progress.Done = true
 	}
+	if progress := s.refreshProgress[progressID]; progress != nil && ctx.Err() != nil {
+		progress.Canceled = true
+	}
+	delete(s.refreshCancels, progressID)
 	s.refreshMu.Unlock()
 }
 

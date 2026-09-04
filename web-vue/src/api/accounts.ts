@@ -695,6 +695,7 @@ async function refreshAndPollWithProgress(
   accountIdsOrTokens: string[],
   onProgress?: (progress: AccountRefreshProgress) => void,
   options?: { all?: boolean },
+  onStarted?: (progressId: string) => void,
 ) {
   const accessTokens = Array.from(new Set(accountIdsOrTokens.map(resolveToken).filter(Boolean)))
   if (!accessTokens.length && !options?.all) {
@@ -706,6 +707,7 @@ async function refreshAndPollWithProgress(
     { access_tokens: accessTokens },
   )
   const progressId = cleanString(start.progress_id)
+  onStarted?.(progressId)
   if (!progressId) {
     return { status: 'ok', progress: null as AccountRefreshProgress | null }
   }
@@ -974,7 +976,12 @@ export const accountsApi = {
   refreshAccountsWithProgress: (
     accountIdsOrTokens: string[],
     onProgress?: (progress: AccountRefreshProgress) => void,
-  ) => refreshAndPollWithProgress(accountIdsOrTokens, onProgress),
+    onStarted?: (progressId: string) => void,
+  ) => refreshAndPollWithProgress(accountIdsOrTokens, onProgress, undefined, onStarted),
+
+  cancelRefreshProgress: (progressId: string) => apiClient.post<never, { canceled?: boolean }>(
+    `/api/accounts/refresh/cancel/${encodeURIComponent(progressId)}`,
+  ),
 
   refreshAccessTokens: (accountIdsOrTokens: string[]) => apiClient.post<
     { access_tokens: string[] },
@@ -985,7 +992,8 @@ export const accountsApi = {
 
   refreshAllAccountsWithProgress: (
     onProgress?: (progress: AccountRefreshProgress) => void,
-  ) => refreshAndPollWithProgress([], onProgress, { all: true }),
+    onStarted?: (progressId: string) => void,
+  ) => refreshAndPollWithProgress([], onProgress, { all: true }, onStarted),
 
   exportAccounts: (accountIdsOrTokens: string[], format: 'json' | 'zip' | 'cpa' | 'sub2api' | 'agent_identity' = 'json') =>
     apiClient.post<{ access_tokens: string[]; format: 'json' | 'zip' | 'cpa' | 'sub2api' | 'agent_identity' }, Blob>('/api/accounts/export', {

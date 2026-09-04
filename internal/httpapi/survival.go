@@ -175,7 +175,9 @@ func (s *Server) survivalProbe(account map[string]any, refreshFirst bool) string
 			}
 			active = refreshed.Fields
 			status := strings.ToLower(firstNonEmpty(stringValue(active["type"]), "free"))
-			_, _, _ = s.store.UpdateAccountIfCredentials(resolvedToken, generation, map[string]any{"survival_status": status, "survival_last_probe_status": status, "survival_last_checked_at": time.Now().UTC().Format(time.RFC3339), "survival_alive": isHealthyOpenAIPlan(status), "survival_plan_type": status, "survival_check_error": nil, "last_remote_checked_at": time.Now().UTC().Format(time.RFC3339), "last_remote_check_status": "ok", "last_remote_check_error": nil})
+			updates := cloneMap(active)
+			mergeSurvivalSuccessFields(updates, status)
+			_, _, _ = s.store.UpdateAccountIfCredentials(resolvedToken, generation, updates)
 			return status
 		}
 	}
@@ -190,7 +192,10 @@ func (s *Server) survivalProbe(account map[string]any, refreshFirst bool) string
 		_, _, _ = s.store.UpdateAccountIfCredentials(resolvedToken, generation, map[string]any{"survival_status": status, "survival_last_probe_status": status, "survival_last_checked_at": time.Now().UTC().Format(time.RFC3339), "survival_check_error": safeRefreshError(err), "last_remote_checked_at": time.Now().UTC().Format(time.RFC3339), "last_remote_check_status": status, "last_remote_check_error": safeRefreshError(err)})
 		return status
 	}
-	updated, applied, updateErr := s.store.RotateAccountTokensIfCredentials(resolvedToken, result.AccessToken, result.RefreshToken, result.IDToken, map[string]any{"survival_status": firstNonEmpty(stringValue(result.Fields["type"]), "free"), "survival_last_probe_status": firstNonEmpty(stringValue(result.Fields["type"]), "free"), "survival_last_checked_at": time.Now().UTC().Format(time.RFC3339), "survival_alive": true, "survival_plan_type": firstNonEmpty(stringValue(result.Fields["type"]), "free"), "survival_check_error": nil, "last_remote_checked_at": time.Now().UTC().Format(time.RFC3339), "last_remote_check_status": "ok", "last_remote_check_error": nil}, generation)
+	status := firstNonEmpty(stringValue(result.Fields["type"]), "free")
+	updates := cloneMap(result.Fields)
+	mergeSurvivalSuccessFields(updates, status)
+	updated, applied, updateErr := s.store.RotateAccountTokensIfCredentials(resolvedToken, result.AccessToken, result.RefreshToken, result.IDToken, updates, generation)
 	if updateErr != nil || updated == nil {
 		return "error"
 	}
@@ -198,6 +203,18 @@ func (s *Server) survivalProbe(account map[string]any, refreshFirst bool) string
 		return firstNonEmpty(strings.ToLower(stringValue(updated["type"])), "free")
 	}
 	return firstNonEmpty(strings.ToLower(stringValue(result.Fields["type"])), "free")
+}
+
+func mergeSurvivalSuccessFields(updates map[string]any, status string) {
+	updates["survival_status"] = status
+	updates["survival_last_probe_status"] = status
+	updates["survival_last_checked_at"] = time.Now().UTC().Format(time.RFC3339)
+	updates["survival_alive"] = isHealthyOpenAIPlan(status)
+	updates["survival_plan_type"] = status
+	updates["survival_check_error"] = nil
+	updates["last_remote_checked_at"] = time.Now().UTC().Format(time.RFC3339)
+	updates["last_remote_check_status"] = "ok"
+	updates["last_remote_check_error"] = nil
 }
 
 func (s *Server) finishSurvival(summary map[string]any) {

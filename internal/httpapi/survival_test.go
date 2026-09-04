@@ -25,7 +25,7 @@ func TestOpenAISurvivalRunUsesRealAccountEndpoints(t *testing.T) {
 		case "/backend-api/me":
 			_ = json.NewEncoder(w).Encode(map[string]any{"email": "survival@example.test", "id": "user-survival"})
 		case "/backend-api/conversation/init":
-			_ = json.NewEncoder(w).Encode(map[string]any{"default_model_slug": "gpt-5", "limits_progress": []any{}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"default_model_slug": "gpt-5", "limits_progress": []any{map[string]any{"feature_name": "image_gen", "remaining": 12}}})
 		case "/backend-api/accounts/check/v4-2023-04-27":
 			_ = json.NewEncoder(w).Encode(map[string]any{"accounts": map[string]any{"default": map[string]any{"account": map[string]any{"plan_type": "plus"}}}})
 		default:
@@ -62,6 +62,13 @@ func TestOpenAISurvivalRunUsesRealAccountEndpoints(t *testing.T) {
 		if running, _ := status["running"].(bool); !running {
 			if summary, ok := status["last_summary"].(map[string]any); ok &&
 				intValue(summary["confirmed"]) == 1 && intValue(summary["total"]) == 1 && intValue(summary["errors"]) == 0 {
+				items, err := server.store.AccountList()
+				if err != nil || len(items) != 2 {
+					t.Fatalf("unexpected accounts after survival: %#v, %v", items, err)
+				}
+				if stringValue(items[0]["email"]) != "survival@example.test" || intValue(items[0]["quota"]) != 12 {
+					t.Fatalf("survival did not persist remote account fields: %#v", items[0])
+				}
 				return
 			}
 		}

@@ -80,6 +80,7 @@ function bulkActionMeta(action: AccountBulkAction) {
 export function useAccountBulkActionsRuntime(options: AccountBulkActionsRuntimeOptions) {
   const toast = useToast()
   const confirmDialog = useConfirmDialog()
+  let activeRefreshProgressId = ''
 
   async function refreshAccountsWithProgress(accountIds: readonly string[], title: string) {
     const targetIds = uniqueIds(accountIds)
@@ -112,7 +113,7 @@ export function useAccountBulkActionsRuntime(options: AccountBulkActionsRuntimeO
             processed: Math.min(targetIds.length, processedOffset + Number(progress.processed || 0)),
             done: false,
           })
-        })
+        }, (progressId) => { activeRefreshProgressId = progressId })
 
         const batchProgress = result.progress
         const batchErrors = normalizeErrorList(batchProgress?.result?.errors)
@@ -151,6 +152,7 @@ export function useAccountBulkActionsRuntime(options: AccountBulkActionsRuntimeO
       await options.loadData({ silentErrorToast: true })
     } finally {
       options.bulkProgress.end()
+      activeRefreshProgressId = ''
     }
   }
 
@@ -190,7 +192,7 @@ export function useAccountBulkActionsRuntime(options: AccountBulkActionsRuntimeO
           processed: Number(progress.processed || 0),
           done: false,
         })
-      })
+      }, (progressId) => { activeRefreshProgressId = progressId })
       const progress = result.progress
       const errors = normalizeErrorList(progress?.result?.errors)
       options.bulkProgress.finish({
@@ -214,6 +216,7 @@ export function useAccountBulkActionsRuntime(options: AccountBulkActionsRuntimeO
       await options.loadData({ silentErrorToast: true })
     } finally {
       options.bulkProgress.end()
+      activeRefreshProgressId = ''
     }
   }
 
@@ -368,7 +371,11 @@ export function useAccountBulkActionsRuntime(options: AccountBulkActionsRuntimeO
 
   function requestStopRefreshProgress() {
     if (options.bulkProgress.requestStop()) {
-      toast.info('已请求停止，当前批次完成后会停止后续批次')
+      const progressId = activeRefreshProgressId
+      if (progressId) {
+        void accountsApi.cancelRefreshProgress(progressId).catch(() => {})
+      }
+      toast.info('正在停止刷新任务，当前请求结束后停止后续账号')
     }
   }
 
