@@ -38,6 +38,116 @@ func adminRequest(handler http.Handler, method, path string, body io.Reader) *ht
 	return recorder
 }
 
+func TestClearAllLogs(t *testing.T) {
+	root := t.TempDir()
+	cfg := adminTestConfig(root)
+	if err := os.MkdirAll(filepath.Join(root, "logs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{
+		filepath.Join(cfg.DataDir, "logs.jsonl"):    `{"id":"call-1"}` + "\n" + `{"id":"call-2"}` + "\n",
+		filepath.Join(cfg.DataDir, "runtime.log"):   "[INFO] startup\n[ERROR] failed\n",
+		filepath.Join(cfg.DataDir, "app.log"):       "app event\n",
+		filepath.Join(root, "logs", "runtime.log"):  "[WARNING] old runtime\n",
+		filepath.Join(root, "logs", "app.log"):      "old app\n",
+		filepath.Join(cfg.DataDir, "accounts.json"): "must remain\n",
+	}
+	for path, contents := range files {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	response := adminRequest(New(cfg).Handler(), http.MethodPost, "/api/logs/clear", nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("clear logs failed: %d %s", response.Code, response.Body.String())
+	}
+	var payload struct {
+		OK         bool  `json:"ok"`
+		Files      int   `json:"files"`
+		Entries    int   `json:"entries"`
+		FreedBytes int64 `json:"freed_bytes"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if !payload.OK || payload.Files != 5 || payload.Entries != 7 || payload.FreedBytes <= 0 {
+		t.Fatalf("unexpected clear logs result: %#v", payload)
+	}
+	for path := range files {
+		if filepath.Base(path) == "accounts.json" {
+			continue
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("cleared log should remain readable: %s: %v", path, err)
+		}
+		if len(raw) != 0 {
+			t.Fatalf("log was not cleared: %s: %q", path, raw)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(cfg.DataDir, "accounts.json")); err != nil {
+		t.Fatalf("non-log data was touched: %v", err)
+	}
+}
+
+func TestClearAllImages(t *testing.T) {
+	root := t.TempDir()
+	cfg := adminTestConfig(root)
+	nested := filepath.Join(cfg.ImageDataDir, "2026", "09")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	imagePath := filepath.Join(nested, "image.png")
+	metaPath := imagePath + ".meta.json"
+	nonImagePath := filepath.Join(nested, "keep.txt")
+	for path, contents := range map[string]string{
+		imagePath:    "png-data",
+		metaPath:     "meta-data",
+		nonImagePath: "keep-data",
+		filepath.Join(cfg.DataDir, "image_tags.json"): `{"2026/09/image.png":["keep"]}`,
+		filepath.Join(cfg.VideoDataDir, "keep.mp4"):   "video-data",
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	response := adminRequest(New(cfg).Handler(), http.MethodPost, "/api/images/clear", nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("clear images failed: %d %s", response.Code, response.Body.String())
+	}
+	var payload struct {
+		OK              bool  `json:"ok"`
+		MediaFiles      int   `json:"media_files"`
+		MetadataFiles   int   `json:"metadata_files"`
+		FreedBytes      int64 `json:"freed_bytes"`
+		TagsFileRemoved bool  `json:"tags_file_removed"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if !payload.OK || payload.MediaFiles != 1 || payload.MetadataFiles != 1 || payload.FreedBytes <= 0 || !payload.TagsFileRemoved {
+		t.Fatalf("unexpected clear images result: %#v", payload)
+	}
+	for _, path := range []string{imagePath, metaPath, filepath.Join(cfg.DataDir, "image_tags.json")} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("file should be removed: %s, err=%v", path, err)
+		}
+	}
+	for _, path := range []string{cfg.ImageDataDir, nonImagePath, filepath.Join(cfg.VideoDataDir, "keep.mp4")} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("unrelated path should remain: %s: %v", path, err)
+		}
+	}
+}
+
 func TestRuntimeMonitorLifecycle(t *testing.T) {
 	monitor := newRuntimeMonitor()
 	monitor.start("call-1", "/v1/videos", "video", "hello")

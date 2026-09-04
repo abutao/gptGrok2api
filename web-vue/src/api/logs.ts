@@ -97,6 +97,13 @@ type RuntimeLogsResponseRaw = {
   }
 }
 
+export type ClearLogsResult = {
+  ok: boolean
+  files: number
+  entries: number
+  freed_bytes: number
+}
+
 export type RuntimeLogsListParams = {
   level?: string
   search?: string
@@ -772,4 +779,7 @@ export const logsApi = {
 
   delete: async (ids: string[]) =>
     apiClient.post<{ ids: string[] }, { removed: number }>('/api/logs/delete', { ids }),
+
+  clearAll: () =>
+    apiClient.post<never, ClearLogsResult>('/api/logs/clear'),
 }

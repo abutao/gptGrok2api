@@ -217,6 +217,61 @@ func (s *Server) deleteLogs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"removed": removed})
 }
 
+func (s *Server) clearAllLogs(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed", "invalid_request_error")
+		return
+	}
+
+	paths := []string{
+		filepath.Join(s.cfg.DataDir, "logs.jsonl"),
+		filepath.Join(s.cfg.DataDir, "runtime.log"),
+		filepath.Join(s.cfg.DataDir, "app.log"),
+		filepath.Join(s.cfg.RootDir, "logs", "runtime.log"),
+		filepath.Join(s.cfg.RootDir, "logs", "app.log"),
+	}
+	seen := make(map[string]struct{}, len(paths))
+	files, entries, freedBytes := 0, 0, int64(0)
+
+	s.logMu.Lock()
+	defer s.logMu.Unlock()
+	for _, path := range paths {
+		path = filepath.Clean(path)
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			writeError(w, http.StatusInternalServerError, err.Error(), "server_error")
+			return
+		}
+		files++
+		freedBytes += int64(len(raw))
+		for _, line := range strings.Split(string(raw), "\n") {
+			if strings.TrimSpace(line) != "" {
+				entries++
+			}
+		}
+		file, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0o600)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error(), "server_error")
+			return
+		}
+		if err := file.Close(); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error(), "server_error")
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "files": files, "entries": entries, "freed_bytes": freedBytes})
+}
+
 func (s *Server) loadCallLogs() []map[string]any {
 	path := filepath.Join(s.cfg.DataDir, "logs.jsonl")
 	file, err := os.Open(path)

@@ -21,6 +21,15 @@
             导出当前页
           </Button>
           <Button
+            size="sm"
+            variant="outline"
+            root-class="text-rose-600 hover:text-rose-700"
+            :disabled="activeFetching || isClearingLogs || isDeleting"
+            @click="clearAllLogs"
+          >
+            {{ isClearingLogs ? '清除中...' : '清除全部日志' }}
+          </Button>
+          <Button
             v-if="activeLogView === 'system'"
             size="sm"
             variant="outline"
@@ -241,6 +250,7 @@ import {
   normalizeSystemLogRow,
 } from '@/api/logs'
 import { useToast } from '@/composables/useToast'
+import { useConfirmDialog } from '@/composables/useConfirmDialog'
 import { usePageRuntime } from '@/composables/usePageRuntime'
 import { usePageDebouncedAction, usePagedQuery } from '@/composables/usePageQuery'
 import { useGalleryFileActions } from '@/composables/useGalleryFileActions'
@@ -281,6 +291,7 @@ type LogRow = SystemLogRow
 type LogView = 'system' | 'runtime'
 
 const toast = useToast()
+const confirmDialog = useConfirmDialog()
 const route = useRoute()
 const pageRuntime = usePageRuntime('logs')
 const apiBaseUrl = import.meta.env.VITE_API_URL || window.location.origin
@@ -290,6 +301,7 @@ const activeLogView = ref<LogView>('system')
 const logs = ref<LogRow[]>([])
 const isFetching = ref(false)
 const logsLoadError = ref('')
+const isClearingLogs = ref(false)
 const DEFAULT_SYSTEM_LOG_LIMIT = 20
 
 const logMeta = reactive<SystemLogsResponse>({
@@ -622,6 +634,37 @@ async function copyText(value: string) {
 
 async function fetchLogs() {
   await systemLogsQuery.load()
+}
+
+async function clearAllLogs() {
+  const confirmed = await confirmDialog.ask({
+    title: '清除全部日志',
+    message: '将同时清空调用日志和运行日志，且此操作不可恢复。确定继续吗？',
+    confirmText: '清除全部',
+    cancelText: '取消',
+  })
+  if (!confirmed || isClearingLogs.value) return
+  isClearingLogs.value = true
+  try {
+    const result = await logsApi.clearAll()
+    toast.success(`已清除 ${result.entries} 条日志，释放 ${formatBytes(result.freed_bytes)}。`, '日志已清除')
+    if (activeLogView.value === 'runtime') {
+      await fetchRuntimeLogs()
+    } else {
+      systemLogsQuery.resetAndLoad()
+    }
+  } catch (error) {
+    toast.error(errorMessage(error, '清除日志失败'), '清除失败')
+  } finally {
+    isClearingLogs.value = false
+  }
+}
+
+function formatBytes(value: number) {
+  const bytes = Number(value) || 0
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
 function clearLogsTimers() {

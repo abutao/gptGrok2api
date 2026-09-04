@@ -6,6 +6,15 @@
           <Button size="sm" variant="outline" :disabled="isLoading" @click="openStorageModal">
             存储管理
           </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            root-class="text-rose-600 hover:text-rose-700"
+            :disabled="isLoading || isClearingAll || batchBusy || isStorageBusy"
+            @click="handleClearAll"
+          >
+            {{ isClearingAll ? '清除中...' : '清除全部图片' }}
+          </Button>
           <Button size="sm" variant="outline" :disabled="isLoading" @click="refreshAll">
             {{ isLoading ? '刷新中...' : '刷新' }}
           </Button>
@@ -415,12 +424,15 @@ const galleryOperations = useGalleryOperationsRuntime({
   storageStats,
   selectedPaths,
   loadGallery,
+  closePreview,
+  closeTagEditor,
   closePreviewIfPath,
   closeTagEditorIfPath,
   clearSelection,
 })
 const {
   batchBusy,
+  isClearingAll,
   isStorageModalOpen,
   isStorageBusy,
   storageActionMessage,
@@ -433,6 +445,7 @@ const {
   handleCompressStorage,
   handleCleanupExpired,
   handleCleanupToTarget,
+  handleClearAll,
   handleDelete,
   handleDeleteSelected,
   handleBatchDownload,

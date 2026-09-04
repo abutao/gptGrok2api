@@ -34,6 +34,8 @@ type GalleryOperationsRuntimeOptions = {
   storageStats: Ref<ImageStorageStats | null>
   selectedPaths: Ref<Set<string>>
   loadGallery: () => Promise<void>
+  closePreview: () => void
+  closeTagEditor: () => void
   closePreviewIfPath: (path: string) => void
   closeTagEditorIfPath: (path: string) => void
   clearSelection: () => void
@@ -46,6 +48,7 @@ export function useGalleryOperationsRuntime(options: GalleryOperationsRuntimeOpt
   const storageActionError = ref('')
   const targetFreeMb = ref('500')
   const batchBusy = ref(false)
+  const isClearingAll = ref(false)
   const operationProgress = reactive({
     open: false,
     title: '',
@@ -206,6 +209,33 @@ export function useGalleryOperationsRuntime(options: GalleryOperationsRuntimeOpt
     }
   }
 
+  async function handleClearAll() {
+    const confirmed = await options.confirmDialog.ask({
+      title: '清除全部图片',
+      message: '将永久删除全部图片、图片元数据和标签数据，且不会删除视频。此操作不可恢复，确定继续吗？',
+      confirmText: '清除全部',
+      cancelText: '取消',
+    })
+    if (!confirmed || isClearingAll.value) return
+    isClearingAll.value = true
+    storageActionMessage.value = '正在清除全部图片...'
+    storageActionError.value = ''
+    try {
+      const result = await galleryApi.clearAll()
+      options.clearSelection()
+      options.closePreview()
+      options.closeTagEditor()
+      await Promise.all([refreshStorageStats({ lock: false }), options.loadGallery()])
+      storageActionMessage.value = `已清除 ${Number(result.media_files || 0)} 张图片，释放 ${formatBytes(result.freed_bytes)}。`
+      options.toast.success(storageActionMessage.value, '图片已清除')
+    } catch (error: any) {
+      storageActionError.value = error?.message || '清除全部图片失败'
+      options.toast.error(storageActionError.value, '清除失败')
+    } finally {
+      isClearingAll.value = false
+    }
+  }
+
   async function handleDelete(file: GalleryFile) {
     const confirmed = await options.confirmDialog.ask({
       title: '确认删除',
@@ -318,6 +348,7 @@ export function useGalleryOperationsRuntime(options: GalleryOperationsRuntimeOpt
 
   return {
     batchBusy,
+    isClearingAll,
     isStorageModalOpen,
     isStorageBusy,
     storageActionMessage,
@@ -330,9 +361,17 @@ export function useGalleryOperationsRuntime(options: GalleryOperationsRuntimeOpt
     handleCompressStorage,
     handleCleanupExpired,
     handleCleanupToTarget,
+    handleClearAll,
     handleDelete,
     handleDeleteSelected,
     handleBatchDownload,
     deactivate,
   }
+}
+
+function formatBytes(value: number) {
+  const bytes = Number(value) || 0
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }

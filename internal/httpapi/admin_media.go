@@ -42,6 +42,8 @@ func (s *Server) adminImages(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "compressed": 0, "saved_bytes": 0, "message": "Go runtime does not recompress source media"})
 	case path == "/storage/cleanup-to-target" && r.Method == http.MethodPost:
 		s.imageStorageCleanup(w, r)
+	case path == "/clear":
+		s.clearAllImages(w, r)
 	case path == "/delete" && r.Method == http.MethodPost:
 		s.deleteAdminImages(w, r)
 	case path == "/download" && r.Method == http.MethodPost:
@@ -187,6 +189,64 @@ func (s *Server) deleteAdminImages(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"removed": removed})
+}
+
+func (s *Server) clearAllImages(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed", "invalid_request_error")
+		return
+	}
+	mediaFiles, metadataFiles, freedBytes := 0, 0, int64(0)
+	err := filepath.Walk(s.cfg.ImageDataDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info == nil || info.IsDir() {
+			return nil
+		}
+		isMetadata := strings.HasSuffix(strings.ToLower(info.Name()), ".meta.json")
+		if !isMetadata && !isImageStorageFile(info.Name()) {
+			return nil
+		}
+		if removeErr := os.Remove(path); removeErr != nil {
+			return removeErr
+		}
+		freedBytes += info.Size()
+		if isMetadata {
+			metadataFiles++
+		} else {
+			mediaFiles++
+			metaPath := path + ".meta.json"
+			if metaInfo, statErr := os.Stat(metaPath); statErr == nil {
+				if removeErr := os.Remove(metaPath); removeErr != nil {
+					return removeErr
+				}
+				freedBytes += metaInfo.Size()
+				metadataFiles++
+			}
+		}
+		return nil
+	})
+	if err != nil && !os.IsNotExist(err) {
+		writeError(w, http.StatusInternalServerError, err.Error(), "server_error")
+		return
+	}
+	cleanupEmptyDirs(s.cfg.ImageDataDir)
+
+	tagsFileRemoved := false
+	imageTagsMu.Lock()
+	if err := os.Remove(s.tagsPath()); err == nil {
+		tagsFileRemoved = true
+	} else if !os.IsNotExist(err) {
+		imageTagsMu.Unlock()
+		writeError(w, http.StatusInternalServerError, err.Error(), "server_error")
+		return
+	}
+	imageTagsMu.Unlock()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "media_files": mediaFiles, "metadata_files": metadataFiles,
+		"freed_bytes": freedBytes, "tags_file_removed": tagsFileRemoved,
+	})
 }
 
 func (s *Server) removeMediaPath(value string) bool {
@@ -482,15 +542,19 @@ func isImageStorageFile(name string) bool {
 }
 
 func cleanupEmptyDirs(root string) {
+	dirs := []string{}
 	_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err == nil && info != nil && info.IsDir() && path != root {
-			entries, readErr := os.ReadDir(path)
-			if readErr == nil && len(entries) == 0 {
-				_ = os.Remove(path)
-			}
+			dirs = append(dirs, path)
 		}
 		return nil
 	})
+	for i := len(dirs) - 1; i >= 0; i-- {
+		entries, err := os.ReadDir(dirs[i])
+		if err == nil && len(entries) == 0 {
+			_ = os.Remove(dirs[i])
+		}
+	}
 }
 
 func stringList(value any) []string {

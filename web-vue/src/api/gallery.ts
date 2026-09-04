@@ -69,6 +69,14 @@ export interface ImageCleanupTargetResult {
   dry_run?: boolean
 }
 
+export interface ClearImagesResult {
+  ok: boolean
+  media_files: number
+  metadata_files: number
+  freed_bytes: number
+  tags_file_removed: boolean
+}
+
 type BackendImageItem = Record<string, any>
 
 type BackendImagesResponse = {
@@ -378,6 +386,9 @@ export const galleryApi = {
 
   deleteFile: (path: string) =>
     galleryApi.deleteFiles([path]),
+
+  clearAll: () =>
+    apiClient.post<never, ClearImagesResult>('/api/images/clear'),
 
   downloadZip: (paths: string[]) =>
     apiClient.post<{ paths: string[] }, Blob>('/api/images/download', {
