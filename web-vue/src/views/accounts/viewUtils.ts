@@ -614,6 +614,10 @@ export function accountQuotaText(item: Account): string {
 export function accountDispatchText(item: Account): string {
   const inflight = Math.max(0, Number(item.image_inflight || 0))
   const reason = cleanString(item.dispatch_reason)
+  const reasonCode = cleanString(item.dispatch_reason_code).toLowerCase()
+  if (reasonCode === 'image_quota_exhausted' || reasonCode === 'quota_exhausted' || reason === '图片额度已耗尽') {
+    return '图片耗尽'
+  }
   if (item.dispatchable === false) {
     return reason ? `${reason} · 在途 ${inflight}` : `不可调度 · 在途 ${inflight}`
   }
