@@ -136,15 +136,21 @@ func (s *Server) importAccountsAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(request.Accounts) > 0 || len(request.Tokens) > 0 {
 		accounts := make([]map[string]any, 0, len(request.Accounts))
+		refreshRefs := append([]string{}, request.Tokens...)
 		for _, account := range request.Accounts {
-			accounts = append(accounts, normalizeImportedAccount(account))
+			normalized := normalizeImportedAccount(account)
+			accounts = append(accounts, normalized)
+			if ref := firstNonEmpty(accountPublicRef(normalized), accountToken(normalized)); ref != "" {
+				refreshRefs = append(refreshRefs, ref)
+			}
 		}
 		added, skipped, items, err := s.store.AddAccounts(request.Tokens, accounts)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error(), "server_error")
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"added": added, "skipped": skipped, "items": accountsForAPI(items)})
+		progressID := s.startAccountRefresh(refreshRefs)
+		writeJSON(w, http.StatusOK, map[string]any{"added": added, "skipped": skipped, "progress_id": progressID, "items": accountsForAPI(items)})
 		return
 	}
 	target, err := url.Parse(strings.TrimSpace(request.URL))
@@ -181,15 +187,20 @@ func (s *Server) importAccountsAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tokens, accounts := importedAccountValues(payload)
+	refreshRefs := append([]string{}, tokens...)
 	for index := range accounts {
 		accounts[index] = normalizeImportedAccount(accounts[index])
+		if ref := firstNonEmpty(accountPublicRef(accounts[index]), accountToken(accounts[index])); ref != "" {
+			refreshRefs = append(refreshRefs, ref)
+		}
 	}
 	added, skipped, items, err := s.store.AddAccounts(tokens, accounts)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error(), "server_error")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"added": added, "skipped": skipped, "items": accountsForAPI(items)})
+	progressID := s.startAccountRefresh(refreshRefs)
+	writeJSON(w, http.StatusOK, map[string]any{"added": added, "skipped": skipped, "progress_id": progressID, "items": accountsForAPI(items)})
 }
 
 func (s *Server) requireAccountImport(w http.ResponseWriter, r *http.Request) bool {

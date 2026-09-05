@@ -98,6 +98,15 @@ func (s *Server) accountRefreshStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	progressID := s.startAccountRefresh(refs)
+	writeJSON(w, http.StatusOK, map[string]any{"progress_id": progressID})
+}
+
+func (s *Server) startAccountRefresh(refs []string) string {
+	refs = uniqueAccountRefs(refs)
+	if len(refs) == 0 {
+		return ""
+	}
 	progressID := newChatID()
 	s.refreshMu.Lock()
 	s.refreshProgress[progressID] = &accountRefreshProgress{
@@ -111,7 +120,7 @@ func (s *Server) accountRefreshStart(w http.ResponseWriter, r *http.Request) {
 	s.refreshCancels[progressID] = cancel
 	s.refreshMu.Unlock()
 	go s.runAccountRefresh(progressID, refs, ctx)
-	writeJSON(w, http.StatusOK, map[string]any{"progress_id": progressID})
+	return progressID
 }
 
 func (s *Server) accountRefreshCancel(w http.ResponseWriter, r *http.Request) {
