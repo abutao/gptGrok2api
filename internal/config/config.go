@@ -68,6 +68,8 @@ type Config struct {
 	Version                string
 	AllowAnonymous         bool
 	RequestTimeout         time.Duration
+	ImagePollTimeout       time.Duration
+	ImageStreamTimeout     time.Duration
 	ChatMaxRetries         int
 	ChatRetryCodes         map[int]bool
 	ImageAccountLimit      int
@@ -148,6 +150,8 @@ func Load(root string) (Config, error) {
 	if imageCleanupIntervalSeconds < 60 {
 		imageCleanupIntervalSeconds = 60
 	}
+	imagePollTimeoutSeconds := clampInt(envInt("GO_IMAGE_POLL_TIMEOUT_SECONDS", 120), 10, 900)
+	imageStreamTimeoutSeconds := clampInt(envInt("GO_IMAGE_STREAM_TIMEOUT_SECONDS", 300), 10, 900)
 
 	cfg := Config{
 		RootDir:                root,
@@ -205,6 +209,8 @@ func Load(root string) (Config, error) {
 		Version:                env("GO_VERSION", "1.2.4-go"),
 		AllowAnonymous:         envBool("GO_ALLOW_ANONYMOUS", false),
 		RequestTimeout:         time.Duration(requestTimeoutSeconds) * time.Second,
+		ImagePollTimeout:       time.Duration(imagePollTimeoutSeconds) * time.Second,
+		ImageStreamTimeout:     time.Duration(imageStreamTimeoutSeconds) * time.Second,
 		ChatMaxRetries:         chatMaxRetries,
 		ChatRetryCodes:         parseStatusCodes(env("GO_CHAT_RETRY_CODES", "401,403,429,500,502,503,504")),
 		ImageAccountLimit:      imageAccountConcurrency,
@@ -245,8 +251,24 @@ func Load(root string) (Config, error) {
 		cfg.APIKey = cfg.AdminKey
 	}
 	applyProxyConfig(&cfg, rawConfig)
+	if value := configInt(rawConfig["image_poll_timeout_secs"]); value > 0 {
+		cfg.ImagePollTimeout = time.Duration(clampInt(value, 10, 900)) * time.Second
+	}
+	if value := configInt(rawConfig["image_stream_timeout_secs"]); value > 0 {
+		cfg.ImageStreamTimeout = time.Duration(clampInt(value, 10, 900)) * time.Second
+	}
 
 	return cfg, nil
+}
+
+func clampInt(value, minimum, maximum int) int {
+	if value < minimum {
+		return minimum
+	}
+	if value > maximum {
+		return maximum
+	}
+	return value
 }
 
 func applyProxyConfig(cfg *Config, values map[string]any) {

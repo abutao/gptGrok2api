@@ -41,10 +41,19 @@ type OpenAIImage struct {
 	Client         *http.Client
 	Proxy          *proxyruntime.Manager
 	RequestTimeout time.Duration
+	PollTimeout    time.Duration
 	browserMu      sync.Mutex
 	browsers       map[string]*browserHTTP
 	pollSleep      func(context.Context, time.Duration) error
 	pollJitter     func() time.Duration
+}
+
+// SetPollTimeout sets the maximum time spent waiting for generated image
+// references after the upstream conversation has started.
+func (o *OpenAIImage) SetPollTimeout(timeout time.Duration) {
+	if timeout > 0 {
+		o.PollTimeout = timeout
+	}
 }
 
 type OpenAIImageInput struct {
@@ -672,7 +681,10 @@ func (o *OpenAIImage) start(ctx context.Context, account accounts.Account, requi
 }
 
 func (o *OpenAIImage) pollConversation(ctx context.Context, account accounts.Account, conversationID string) ([]string, error) {
-	timeout := o.RequestTimeout
+	timeout := o.PollTimeout
+	if timeout <= 0 {
+		timeout = o.RequestTimeout
+	}
 	if timeout <= 0 {
 		timeout = openAIImageDefaultPollTimeout
 	}

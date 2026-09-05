@@ -338,7 +338,7 @@ func (s *Server) generateOpenAIImageData(r *http.Request, ctx context.Context, p
 		count = 1
 	}
 	results := make([][]map[string]string, count)
-	ctx, timeoutCancel := context.WithTimeout(ctx, imageRequestTotalTimeout(s.cfg.RequestTimeout))
+	ctx, timeoutCancel := context.WithTimeout(ctx, imageRequestTotalTimeout(effectiveImageStreamTimeout(s.cfg.ImageStreamTimeout, s.cfg.RequestTimeout)))
 	defer timeoutCancel()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -523,16 +523,22 @@ func (s *Server) generateOpenAIImageData(r *http.Request, ctx context.Context, p
 
 func imageRequestTotalTimeout(requestTimeout time.Duration) time.Duration {
 	if requestTimeout <= 0 {
-		requestTimeout = 3 * time.Minute
+		requestTimeout = 5 * time.Minute
 	}
-	total := requestTimeout * 2
-	if total < 2*time.Minute {
-		return 2 * time.Minute
+	if requestTimeout < 10*time.Second {
+		return 10 * time.Second
 	}
-	if total > 6*time.Minute {
-		return 6 * time.Minute
+	if requestTimeout > 15*time.Minute {
+		return 15 * time.Minute
 	}
-	return total
+	return requestTimeout
+}
+
+func effectiveImageStreamTimeout(imageTimeout, fallback time.Duration) time.Duration {
+	if imageTimeout > 0 {
+		return imageTimeout
+	}
+	return fallback
 }
 
 func (s *Server) parseImageEditRequest(r *http.Request) (imageEditRequest, error) {

@@ -94,6 +94,7 @@ func New(cfg config.Config) *Server {
 	proxyManager.SetUpstreamsFile(cfg.ProxyUpstreamsFile)
 	proxyTransport := proxyruntime.NewTransport(http.DefaultTransport)
 	requestClient := &http.Client{Transport: proxyTransport, Timeout: cfg.RequestTimeout}
+	imageRequestClient := &http.Client{Transport: proxyTransport, Timeout: cfg.ImageStreamTimeout}
 	var taskQueue tasks.QueueAPI = tasks.New(cfg.QueuePath)
 	if cfg.QueueBackend == "redis" {
 		redisQueue := tasks.NewRedis(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB, "gptgrok2api")
@@ -114,7 +115,7 @@ func New(cfg config.Config) *Server {
 		chatProvider:       provider.NewGrokChat(cfg.GrokChatURL, requestClient, cfg.RequestTimeout),
 		consoleProvider:    provider.NewConsoleChat(cfg.ConsoleURL, requestClient),
 		mediaProvider:      provider.NewMedia(requestClient, cfg.MediaChatURL, cfg.MediaPostURL, cfg.AssetUploadURL, cfg.AssetsBaseURL, cfg.RequestTimeout),
-		openAIImage:        provider.NewOpenAIImage(cfg.OpenAIBaseURL, requestClient, proxyManager, cfg.RequestTimeout),
+		openAIImage:        provider.NewOpenAIImage(cfg.OpenAIBaseURL, imageRequestClient, proxyManager, cfg.ImageStreamTimeout),
 		gptMail:            provider.NewGPTMail(requestClient),
 		xaiProbe:           provider.NewXAIProbe(cfg.XAICLIBaseURL, cfg.XAICLITokenURL, requestClient),
 		grokQuota:          provider.NewGrokQuota(cfg.GrokRateLimitsURL, requestClient, proxyManager),
@@ -140,6 +141,7 @@ func New(cfg config.Config) *Server {
 		registerStore:      registerruntime.New(cfg.RegisterPath, cfg.GrokAccountsPath),
 		registerRuntime:    registerruntime.NewRuntime(),
 	}
+	server.openAIImage.SetPollTimeout(cfg.ImagePollTimeout)
 	server.openAIChat = provider.NewOpenAIChat(server.openAIImage)
 	proxyManager.SetImageNodeResultCallback(server.persistProxyGroupRuntimeResult)
 	server.accountPool.SetInvalidCallback(server.maybeAutoRemoveInvalidAccount)
