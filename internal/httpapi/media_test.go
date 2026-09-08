@@ -37,14 +37,6 @@ func TestValidOpenAIImageSizeAcceptsArbitraryDimensions(t *testing.T) {
 	}
 }
 
-func TestImageEditsAlwaysReturnServerURL(t *testing.T) {
-	for _, requested := range []string{"", "url", "b64_json"} {
-		if actual := imageEditResponseFormat(requested); actual != "url" {
-			t.Fatalf("imageEditResponseFormat(%q) = %q, want url", requested, actual)
-		}
-	}
-}
-
 var tinyPNG = []byte{
 	0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
 	0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
@@ -169,6 +161,21 @@ func TestRequestPublicBaseUsesConfiguredPublicURL(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:3000/v1/images/generations", nil)
 	if value := requestPublicBase(request); value != "http://23.148.212.231:8000" {
 		t.Fatalf("expected configured public base, got %q", value)
+	}
+}
+
+func TestImageEditResponseFormatHonorsRequestedFormat(t *testing.T) {
+	if got := imageEditResponseFormat(""); got != "url" {
+		t.Fatalf("expected empty response_format to default to url, got %q", got)
+	}
+	if got := imageEditResponseFormat("b64_json"); got != "b64_json" {
+		t.Fatalf("expected b64_json response_format, got %q", got)
+	}
+	if got := imageEditResponseFormat("url"); got != "url" {
+		t.Fatalf("expected url response_format, got %q", got)
+	}
+	if got := imageEditResponseFormat("xml"); got != "xml" {
+		t.Fatalf("expected unsupported format to remain available for validation, got %q", got)
 	}
 }
 

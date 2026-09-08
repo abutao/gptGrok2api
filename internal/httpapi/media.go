@@ -1180,8 +1180,12 @@ func (s *Server) imageEdits(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"created": time.Now().Unix(), "data": data})
 }
 
-func imageEditResponseFormat(string) string {
-	return "url"
+func imageEditResponseFormat(value string) string {
+	format := strings.ToLower(strings.TrimSpace(value))
+	if format == "" {
+		return "url"
+	}
+	return format
 }
 
 func (s *Server) imageFile(w http.ResponseWriter, r *http.Request) {
