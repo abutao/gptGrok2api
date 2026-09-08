@@ -319,6 +319,40 @@ func TestRequestMonitorEnrichmentUpdatesLiveEgressAndAccount(t *testing.T) {
 	}
 }
 
+func TestAppendCallLogFallsBackToMonitorImageOutputsForB64Response(t *testing.T) {
+	root := t.TempDir()
+	cfg := adminTestConfig(root)
+	server := New(cfg)
+	server.monitor.start("call-b64-image", "/v1/images/edits", "gpt-image-2", "edit")
+	server.monitor.enrich("call-b64-image", map[string]any{
+		"output_images": []map[string]string{{
+			"url":      "/v1/files/image?id=generated-image",
+			"filename": "generated-image",
+		}},
+	})
+	server.monitor.finish("call-b64-image", "success", "gpt-image-2", "edit", "")
+	record, ok := server.monitor.detail("call-b64-image")
+	if !ok {
+		t.Fatal("completed monitor record missing")
+	}
+
+	server.appendCallLog(record, http.StatusOK, map[string]any{"size": "1024x1024"}, []byte("{\"data\":[{\"b64_json\":\"aGVsbG8=\"}]}"), "")
+	raw, err := os.ReadFile(filepath.Join(cfg.DataDir, "logs.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entry struct {
+		Detail map[string]any `json:"detail"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(raw), &entry); err != nil {
+		t.Fatal(err)
+	}
+	outputs, ok := entry.Detail["output_images"].([]any)
+	if !ok || len(outputs) != 1 || mapValue(outputs[0])["url"] != "/v1/files/image?id=generated-image" {
+		t.Fatalf("expected monitor image output in log, got %#v", entry.Detail["output_images"])
+	}
+}
+
 func TestRequestMonitorDoesNotCountHandlerExecutionAsQueueTime(t *testing.T) {
 	server := &Server{monitor: newRuntimeMonitor()}
 	request := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"model":"gpt-image-2","prompt":"test"}`))

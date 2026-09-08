@@ -26,30 +26,31 @@ type runtimeMonitor struct {
 }
 
 type monitorRecord struct {
-	CallID       string           `json:"call_id"`
-	Endpoint     string           `json:"endpoint"`
-	Model        string           `json:"model"`
-	Summary      string           `json:"summary,omitempty"`
-	Status       string           `json:"status"`
-	Stage        string           `json:"stage"`
-	StartedAt    int64            `json:"started_ts"`
-	UpdatedAt    int64            `json:"updated_ts"`
-	EndedAt      int64            `json:"ended_ts,omitempty"`
-	Duration     int64            `json:"duration_ms,omitempty"`
-	Progress     int              `json:"progress,omitempty"`
-	Error        string           `json:"error,omitempty"`
-	Metrics      map[string]any   `json:"metrics,omitempty"`
-	Perf         map[string]any   `json:"perf,omitempty"`
-	Events       []map[string]any `json:"events,omitempty"`
-	RequestMeta  map[string]any   `json:"request_meta,omitempty"`
-	AccountEmail string           `json:"account_email,omitempty"`
-	AccountID    string           `json:"account_id,omitempty"`
-	KeyName      string           `json:"key_name,omitempty"`
-	KeyID        string           `json:"key_id,omitempty"`
-	ProxySource  string           `json:"proxy_source,omitempty"`
-	EgressMode   string           `json:"egress_mode,omitempty"`
-	EgressLabel  string           `json:"egress_label,omitempty"`
-	HasProxy     bool             `json:"has_proxy"`
+	CallID       string              `json:"call_id"`
+	Endpoint     string              `json:"endpoint"`
+	Model        string              `json:"model"`
+	Summary      string              `json:"summary,omitempty"`
+	Status       string              `json:"status"`
+	Stage        string              `json:"stage"`
+	StartedAt    int64               `json:"started_ts"`
+	UpdatedAt    int64               `json:"updated_ts"`
+	EndedAt      int64               `json:"ended_ts,omitempty"`
+	Duration     int64               `json:"duration_ms,omitempty"`
+	Progress     int                 `json:"progress,omitempty"`
+	Error        string              `json:"error,omitempty"`
+	Metrics      map[string]any      `json:"metrics,omitempty"`
+	Perf         map[string]any      `json:"perf,omitempty"`
+	Events       []map[string]any    `json:"events,omitempty"`
+	RequestMeta  map[string]any      `json:"request_meta,omitempty"`
+	OutputImages []map[string]string `json:"output_images,omitempty"`
+	AccountEmail string              `json:"account_email,omitempty"`
+	AccountID    string              `json:"account_id,omitempty"`
+	KeyName      string              `json:"key_name,omitempty"`
+	KeyID        string              `json:"key_id,omitempty"`
+	ProxySource  string              `json:"proxy_source,omitempty"`
+	EgressMode   string              `json:"egress_mode,omitempty"`
+	EgressLabel  string              `json:"egress_label,omitempty"`
+	HasProxy     bool                `json:"has_proxy"`
 }
 
 func newRuntimeMonitor() *runtimeMonitor {
@@ -148,6 +149,9 @@ func (m *runtimeMonitor) enrich(id string, body map[string]any) {
 	}
 	if value := stringValue(body["key_id"]); value != "" {
 		item.KeyID = value
+	}
+	if outputs := monitorImageOutputs(body["output_images"]); len(outputs) > 0 {
+		item.OutputImages = append(item.OutputImages, outputs...)
 	}
 	if len(item.Events) > 0 {
 		for k, v := range body {
@@ -1025,7 +1029,11 @@ func (s *Server) appendCallLog(record monitorRecord, statusCode int, requestShap
 		detail["raw_error"] = errorText
 		detail["upstream_error"] = errorText
 	}
-	if outputs := responseImageOutputs(responseBody); len(outputs) > 0 {
+	outputs := responseImageOutputs(responseBody)
+	if len(outputs) == 0 {
+		outputs = record.OutputImages
+	}
+	if len(outputs) > 0 {
 		detail["output_images"] = outputs
 		detail["image_urls"] = outputs
 	}
@@ -1059,6 +1067,33 @@ func responseImageOutputs(raw []byte) []map[string]string {
 	if json.Unmarshal(raw, &value) != nil {
 		return nil
 	}
+	return responseImageOutputsFromValue(value)
+}
+
+func monitorImageOutputs(value any) []map[string]string {
+	var outputs []map[string]string
+	switch items := value.(type) {
+	case []map[string]string:
+		outputs = append(outputs, items...)
+	case []any:
+		for _, item := range items {
+			if fields, ok := item.(map[string]any); ok {
+				output := map[string]string{}
+				for key, field := range fields {
+					if text := stringValue(field); text != "" {
+						output[key] = text
+					}
+				}
+				if len(output) > 0 {
+					outputs = append(outputs, output)
+				}
+			}
+		}
+	}
+	return outputs
+}
+
+func responseImageOutputsFromValue(value any) []map[string]string {
 	out := []map[string]string{}
 	appendURL := func(value string) {
 		u := strings.TrimSpace(value)
@@ -1079,8 +1114,8 @@ func responseImageOutputs(raw []byte) []map[string]string {
 	walk = func(v any) {
 		switch x := v.(type) {
 		case map[string]any:
-			for k, item := range x {
-				if k == "url" {
+			for key, item := range x {
+				if key == "url" {
 					appendURL(stringValue(item))
 				} else {
 					walk(item)

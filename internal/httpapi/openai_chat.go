@@ -225,6 +225,7 @@ func (s *Server) completeOpenAIImageChat(w http.ResponseWriter, r *http.Request,
 			return
 		}
 		s.recordGeneratedMedia(r.Context(), map[string]string{"url": localURL})
+		s.enrichRequestMonitor(r, map[string]any{"output_images": []map[string]string{{"url": localURL}}})
 		parts = append(parts, fmt.Sprintf("![image](%s)", item["url"]))
 		// Chat image requests have no image-count parameter and return one
 		// assistant image. Do not persist extra upstream references.
