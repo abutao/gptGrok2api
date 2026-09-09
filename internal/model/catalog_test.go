@@ -12,13 +12,22 @@ func TestCatalogContainsCoreModels(t *testing.T) {
 }
 
 func TestImageModelChatCompatibilityRoute(t *testing.T) {
-	route, ok := ResolveChat("gpt-image-2")
-	if !ok || !route.OpenAI || !route.Image {
-		t.Fatal("gpt-image-2 must retain its image chat-completions compatibility route")
-	}
-	for _, item := range Catalog() {
-		if item.ID == "gpt-image-2" && item.Capability&Chat != 0 {
-			t.Fatal("gpt-image-2 must remain hidden from the normal chat catalog")
+	for _, id := range []string{
+		"gpt-image-2",
+		"gpt-image-2.5",
+		"gpt-image-2.5-flare",
+		"gpt-image-2.5-sunburst",
+	} {
+		item, found := Find(Catalog(), id)
+		if !found || item.Capability&Image == 0 {
+			t.Fatalf("%s must be an image model", id)
+		}
+		route, ok := ResolveChat(id)
+		if !ok || !route.OpenAI || !route.Image {
+			t.Fatalf("%s must use the OpenAI image chat-completions route", id)
+		}
+		if item.Capability&Chat != 0 {
+			t.Fatalf("%s must remain hidden from the normal chat catalog", id)
 		}
 	}
 }

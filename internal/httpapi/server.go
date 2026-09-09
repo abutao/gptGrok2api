@@ -676,7 +676,15 @@ func monitorRequestShape(r *http.Request) (string, string, any) {
 	if n < 1 {
 		n = 1
 	}
-	return modelName, summary, map[string]any{"content_type": "application/json", "image_url_parts": urlParts, "data_url_images": dataURLs, "size": stringValue(payload["size"]), "requested_n": n}
+	return modelName, summary, map[string]any{
+		"content_type":    "application/json",
+		"image_url_parts": urlParts,
+		"data_url_images": dataURLs,
+		"size":            stringValue(payload["size"]),
+		"quality":         stringValue(payload["quality"]),
+		"response_format": stringValue(payload["response_format"]),
+		"requested_n":     n,
+	}
 }
 
 func imageReferenceStats(value any) (int, int) {

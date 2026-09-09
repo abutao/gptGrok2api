@@ -796,6 +796,9 @@ func (s *Server) runImageTask(task *imageTaskState, authHeader, apiKey string) {
 		"image_url_parts": 0,
 		"data_url_images": 0,
 		"size":            task.Size,
+		"quality":         task.Quality,
+		"response_format": "url",
+		"requested_n":     task.N,
 	}
 	if task.Mode == "edit" {
 		requestShape["content_type"] = "multipart/form-data"
@@ -853,6 +856,7 @@ func (s *Server) runImageTask(task *imageTaskState, authHeader, apiKey string) {
 		_ = writer.WriteField("prompt", task.Prompt)
 		_ = writer.WriteField("n", fmt.Sprint(task.N))
 		_ = writer.WriteField("size", task.Size)
+		_ = writer.WriteField("quality", task.Quality)
 		_ = writer.WriteField("response_format", "url")
 		for index, raw := range task.Images {
 			name := "image.png"
@@ -872,7 +876,7 @@ func (s *Server) runImageTask(task *imageTaskState, authHeader, apiKey string) {
 		contentType = writer.FormDataContentType()
 		target = "http://internal/v1/images/edits"
 	} else {
-		raw, _ := json.Marshal(map[string]any{"model": task.Model, "prompt": task.Prompt, "n": task.N, "size": task.Size, "response_format": "url"})
+		raw, _ := json.Marshal(map[string]any{"model": task.Model, "prompt": task.Prompt, "n": task.N, "size": task.Size, "quality": task.Quality, "response_format": "url"})
 		body = bytes.NewReader(raw)
 		target = "http://internal/v1/images/generations"
 	}

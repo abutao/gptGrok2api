@@ -174,6 +174,7 @@ export type SystemLogRow = {
   rawUpstreamError: string
   urls: string[]
   imageUrls: string[]
+  imageResolutions: string[]
   diagnosisChips: LogDiagnosisChip[]
   preview: string
   rawJson: string
@@ -305,6 +306,20 @@ function normalizePreviewUrls(urls: string[], apiBaseUrl = ''): string[] {
   return Array.from(new Set(urls.map((url) => normalizePreviewUrl(url, apiBaseUrl)).filter(Boolean)))
 }
 
+function imageResolutionLabels(detail: Record<string, any>): string[] {
+  const resultImages = Array.isArray(detail.result_images)
+    ? detail.result_images
+    : Array.isArray(detail.output_images)
+      ? detail.output_images
+      : []
+  return Array.from(new Set(resultImages.map((item) => {
+    if (!item || typeof item !== 'object') return ''
+    const width = cleanString((item as Record<string, unknown>).width)
+    const height = cleanString((item as Record<string, unknown>).height)
+    return width && height ? `${width}×${height}` : '未知'
+  }).filter(Boolean)))
+}
+
 function prettyJson(value: unknown): string {
   try {
     return JSON.stringify(value ?? {}, null, 2)
@@ -389,6 +404,7 @@ export function normalizeSystemLogRow(item: SystemLog, index: number, options: N
   const preview = summarizeLogText(requestText || rawUpstreamMessage || upstreamPreview || error || rawUpstreamError || reason || summary)
   const urls = collectUrls(detail)
   const imageUrls = normalizePreviewUrls(urls, options.apiBaseUrl)
+  const imageResolutions = imageResolutionLabels(detail)
   const status = detailValue(detail, 'status')
   const durationMs = detailValue(detail, 'duration_ms')
   const statusCode = detailValue(detail, 'status_code')
@@ -453,6 +469,7 @@ export function normalizeSystemLogRow(item: SystemLog, index: number, options: N
     rawUpstreamError,
     urls,
     imageUrls,
+    imageResolutions,
     diagnosisChips: buildSystemLogDiagnosisChips({
       status,
       durationMs,

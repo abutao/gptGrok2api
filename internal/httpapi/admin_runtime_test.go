@@ -328,6 +328,8 @@ func TestAppendCallLogFallsBackToMonitorImageOutputsForB64Response(t *testing.T)
 		"output_images": []map[string]string{{
 			"url":      "/v1/files/image?id=generated-image",
 			"filename": "generated-image",
+			"width":    "1536",
+			"height":   "1024",
 		}},
 	})
 	server.monitor.finish("call-b64-image", "success", "gpt-image-2", "edit", "")
@@ -336,7 +338,12 @@ func TestAppendCallLogFallsBackToMonitorImageOutputsForB64Response(t *testing.T)
 		t.Fatal("completed monitor record missing")
 	}
 
-	server.appendCallLog(record, http.StatusOK, map[string]any{"size": "1024x1024"}, []byte("{\"data\":[{\"b64_json\":\"aGVsbG8=\"}]}"), "")
+	server.appendCallLog(record, http.StatusOK, map[string]any{
+		"size":            "1536x1024",
+		"quality":         "high",
+		"response_format": "b64_json",
+		"requested_n":     1,
+	}, []byte("{\"data\":[{\"b64_json\":\"aGVsbG8=\",\"width\":\"1536\",\"height\":\"1024\"}]}"), "")
 	raw, err := os.ReadFile(filepath.Join(cfg.DataDir, "logs.jsonl"))
 	if err != nil {
 		t.Fatal(err)
@@ -350,6 +357,21 @@ func TestAppendCallLogFallsBackToMonitorImageOutputsForB64Response(t *testing.T)
 	outputs, ok := entry.Detail["output_images"].([]any)
 	if !ok || len(outputs) != 1 || mapValue(outputs[0])["url"] != "/v1/files/image?id=generated-image" {
 		t.Fatalf("expected monitor image output in log, got %#v", entry.Detail["output_images"])
+	}
+	image := mapValue(outputs[0])
+	if image["width"] != "1536" || image["height"] != "1024" {
+		t.Fatalf("expected actual output dimensions in log, got %#v", image)
+	}
+	if entry.Detail["result_data_count"] != float64(1) {
+		t.Fatalf("expected actual output count in log, got %#v", entry.Detail["result_data_count"])
+	}
+	resultImages, ok := entry.Detail["result_images"].([]any)
+	if !ok || len(resultImages) != 1 || mapValue(resultImages[0])["width"] != "1536" || mapValue(resultImages[0])["height"] != "1024" {
+		t.Fatalf("expected actual output resolution in log, got %#v", entry.Detail["result_images"])
+	}
+	requestMeta := mapValue(entry.Detail["request_meta"])
+	if requestMeta["size"] != "1536x1024" || requestMeta["quality"] != "high" || requestMeta["response_format"] != "b64_json" || requestMeta["requested_n"] != float64(1) {
+		t.Fatalf("expected complete image request metadata, got %#v", requestMeta)
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"io"
+	"log"
 	"mime"
 	"mime/multipart"
 	"net"
@@ -259,6 +260,15 @@ func (s *Server) imageGenerations(w http.ResponseWriter, r *http.Request) {
 	if request.Quality == "" {
 		request.Quality = "auto"
 	}
+	s.enrichRequestMonitor(r, map[string]any{
+		"model": request.Model,
+		"request_meta": map[string]any{
+			"size":            request.Size,
+			"quality":         request.Quality,
+			"response_format": request.ResponseFormat,
+			"requested_n":     request.N,
+		},
+	})
 	if request.N < 1 || request.N > 10 {
 		writeError(w, http.StatusBadRequest, "n must be between 1 and 10", "invalid_request_error")
 		return
@@ -325,11 +335,12 @@ func (s *Server) imageGenerations(w http.ResponseWriter, r *http.Request) {
 		}
 		s.stageRequestMonitor(r, "image_resolving", 85, map[string]any{"resolve_ms": time.Since(resolveStarted).Milliseconds()})
 		s.stageRequestMonitor(r, "image_download_done", 95, map[string]any{"download_ms": time.Since(resolveStarted).Milliseconds()})
-		s.recordGeneratedMedia(r.Context(), value)
+		s.recordResolvedImage(r.Context(), r, value, "")
 		data = append(data, value)
 	}
 	s.accountPool.Feedback(lease.Account, http.StatusOK, nil)
 	s.stageRequestMonitor(r, "image_single_done", 99, map[string]any{"total_ms": s.requestMonitorElapsed(r), "response_ms": s.requestMonitorElapsed(r)})
+	logImageCompletion(request.Model, request.Size, request.Quality, request.ResponseFormat, data)
 	writeJSON(w, http.StatusOK, map[string]any{"created": time.Now().Unix(), "data": data})
 }
 
@@ -467,8 +478,7 @@ func (s *Server) generateOpenAIImageData(r *http.Request, ctx context.Context, p
 						resolveErr = err
 						break
 					}
-					s.recordGeneratedMedia(ctx, map[string]string{"url": localURL})
-					s.enrichRequestMonitor(r, map[string]any{"output_images": []map[string]string{{"url": localURL}}})
+					s.recordResolvedImage(ctx, r, value, localURL)
 					items = append(items, value)
 					// Each worker represents exactly one requested output. Upstream can
 					// expose that output through multiple references, so resolving the
@@ -519,6 +529,8 @@ func (s *Server) generateOpenAIImageData(r *http.Request, ctx context.Context, p
 	if len(data) > count {
 		data = data[:count]
 	}
+	s.stageRequestMonitor(r, "image_single_done", 99, map[string]any{"total_ms": s.requestMonitorElapsed(r), "response_ms": s.requestMonitorElapsed(r)})
+	logImageCompletion(model, size, quality, responseFormat, data)
 	return data, nil
 }
 
@@ -1039,6 +1051,8 @@ func (s *Server) imageEdits(w http.ResponseWriter, r *http.Request) {
 		"model": request.Model,
 		"request_meta": map[string]any{
 			"size":            request.Size,
+			"quality":         request.Quality,
+			"response_format": request.ResponseFormat,
 			"image_url_parts": len(request.Inputs),
 			"data_url_images": len(request.Inputs),
 			"requested_n":     request.N,
@@ -1107,13 +1121,29 @@ func (s *Server) imageEdits(w http.ResponseWriter, r *http.Request) {
 	if len(inputs) > 7 {
 		inputs = inputs[len(inputs)-7:]
 	}
+	quality := strings.TrimSpace(request.Quality)
+	if quality == "" {
+		quality = "auto"
+	}
+	responseFormat := imageEditResponseFormat(request.ResponseFormat)
+	if isOpenAIImageModel(modelName) {
+		responseFormat = openAIImageResponseFormat(request.ResponseFormat)
+	}
+	s.enrichRequestMonitor(r, map[string]any{"request_meta": map[string]any{
+		"size":            request.Size,
+		"quality":         quality,
+		"response_format": responseFormat,
+		"image_url_parts": len(inputs),
+		"data_url_images": len(inputs),
+		"requested_n":     n,
+	}})
 	if isOpenAIImageModel(modelName) {
 		size := strings.TrimSpace(request.Size)
 		if size == "" {
 			size = "1024x1024"
 		}
-		format := openAIImageResponseFormat(request.ResponseFormat)
-		data, err := s.generateOpenAIImageData(r, r.Context(), prompt, modelName, size, request.Quality, inputs, format, requestPublicBase(r), n)
+		s.enrichRequestMonitor(r, map[string]any{"request_meta": map[string]any{"size": size}})
+		data, err := s.generateOpenAIImageData(r, r.Context(), prompt, modelName, size, quality, inputs, responseFormat, requestPublicBase(r), n)
 		if err != nil {
 			writeError(w, upstreamStatus(err), err.Error(), "upstream_error")
 			return
@@ -1167,17 +1197,19 @@ func (s *Server) imageEdits(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data := make([]map[string]string, 0, minInt(n, len(images)))
-	format := imageEditResponseFormat(request.ResponseFormat)
+	format := responseFormat
 	for _, image := range images[:minInt(n, len(images))] {
 		value, resolveErr := s.mediaProvider.ResolveImage(r.Context(), lease.Account, image, format, s.cfg.ImageDataDir, requestPublicBase(r))
 		if resolveErr != nil {
 			writeError(w, upstreamStatus(resolveErr), resolveErr.Error(), "upstream_error")
 			return
 		}
-		s.recordGeneratedMedia(r.Context(), value)
+		s.recordResolvedImage(r.Context(), r, value, "")
 		data = append(data, value)
 	}
 	s.accountPool.Feedback(lease.Account, http.StatusOK, nil)
+	s.stageRequestMonitor(r, "image_single_done", 99, map[string]any{"total_ms": s.requestMonitorElapsed(r), "response_ms": s.requestMonitorElapsed(r)})
+	logImageCompletion(modelName, request.Size, quality, responseFormat, data)
 	writeJSON(w, http.StatusOK, map[string]any{"created": time.Now().Unix(), "data": data})
 }
 
@@ -1206,6 +1238,32 @@ func imageGenerationResponseFormat(modelName, value string) string {
 		return "b64_json"
 	}
 	return "url"
+}
+
+func (s *Server) recordResolvedImage(ctx context.Context, r *http.Request, value map[string]string, fallbackURL string) {
+	url := firstNonEmpty(value["url"], fallbackURL)
+	if url != "" {
+		s.recordGeneratedMedia(ctx, map[string]string{"url": url})
+	}
+	if url == "" {
+		return
+	}
+	output := map[string]string{"url": url}
+	if intValue(value["width"]) > 0 && intValue(value["height"]) > 0 {
+		output["width"] = value["width"]
+		output["height"] = value["height"]
+	}
+	s.enrichRequestMonitor(r, map[string]any{"output_images": []map[string]string{output}})
+}
+
+func logImageCompletion(modelName, size, quality, responseFormat string, data []map[string]string) {
+	resolutions := make([]string, 0, len(data))
+	for _, item := range data {
+		if intValue(item["width"]) > 0 && intValue(item["height"]) > 0 {
+			resolutions = append(resolutions, item["width"]+"x"+item["height"])
+		}
+	}
+	log.Printf("image_single_done model=%s requested_size=%s quality=%s response_format=%s image_count=%d result_images=%s", modelName, size, quality, responseFormat, len(data), strings.Join(resolutions, ","))
 }
 
 func (s *Server) imageFile(w http.ResponseWriter, r *http.Request) {
@@ -1312,7 +1370,12 @@ func mediaPools(modelName string) []string {
 }
 
 func isOpenAIImageModel(modelName string) bool {
-	return strings.EqualFold(strings.TrimSpace(modelName), "gpt-image-2")
+	switch strings.ToLower(strings.TrimSpace(modelName)) {
+	case "gpt-image-2", "gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst":
+		return true
+	default:
+		return false
+	}
 }
 
 func validOpenAIImageSize(size string) bool {

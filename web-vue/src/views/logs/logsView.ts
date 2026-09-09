@@ -260,6 +260,8 @@ export function systemLogRowSignature(item: SystemLogRow, input: SystemLogRowSig
     boundedSignatureText(item.durationMs, 64),
     boundedSignatureText(statusLabel(item), 64),
     statusTone(item),
+    item.imageResolutions.length,
+    item.imageResolutions.map((value) => boundedSignatureText(value, 48)).join(','),
     boundedSignatureText(summaryText(item)),
     item.imageUrls.length,
     item.imageUrls.slice(0, 4).map((url) => boundedSignatureText(url, 96)).join(','),

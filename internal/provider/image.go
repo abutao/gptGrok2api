@@ -77,13 +77,18 @@ func (m *Media) ResolveImage(ctx context.Context, account accounts.Account, imag
 	}
 	if format == "b64_json" {
 		if image.Base64 != "" {
-			return map[string]string{"b64_json": image.Base64}, nil
+			value := imageResponseDimensions(decodeImageBase64(image.Base64))
+			value["b64_json"] = image.Base64
+			return value, nil
 		}
 		raw, mime, err := m.Fetch(ctx, account, image.URL)
 		if err != nil {
 			return nil, err
 		}
-		return map[string]string{"b64_json": base64.StdEncoding.EncodeToString(raw), "mime": mime}, nil
+		value := imageResponseDimensions(raw)
+		value["b64_json"] = base64.StdEncoding.EncodeToString(raw)
+		value["mime"] = mime
+		return value, nil
 	}
 	raw, mime, err := m.Fetch(ctx, account, image.URL)
 	if err != nil {
@@ -103,7 +108,17 @@ func (m *Media) ResolveImage(ctx context.Context, account accounts.Account, imag
 	if base != "" {
 		value = base + value
 	}
-	return map[string]string{"url": value}, nil
+	result := imageResponseDimensions(raw)
+	result["url"] = value
+	return result, nil
+}
+
+func decodeImageBase64(value string) []byte {
+	raw, err := base64.StdEncoding.DecodeString(value)
+	if err != nil {
+		return nil
+	}
+	return raw
 }
 
 func absoluteAssetURL(value string) string {

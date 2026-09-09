@@ -37,6 +37,14 @@
       </StateBadge>
     </td>
     <td class="py-4 pr-5 align-middle">
+      <p
+        class="max-w-[10rem] break-words font-mono text-xs tabular-nums text-foreground"
+        :title="item.imageResolutions.length ? `实际分辨率：${item.imageResolutions.join(' / ')}` : ''"
+      >
+        {{ item.imageResolutions.join(' / ') || '-' }}
+      </p>
+    </td>
+    <td class="py-4 pr-5 align-middle">
       <LogImagePreviewCell
         :image-urls="item.imageUrls"
         :first-image-broken="firstImageBroken"

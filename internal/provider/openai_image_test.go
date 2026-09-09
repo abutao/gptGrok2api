@@ -914,6 +914,20 @@ func TestNormalizeOpenAIImageSize(t *testing.T) {
 	}
 }
 
+func TestOpenAIImageModelSlug(t *testing.T) {
+	tests := map[string]string{
+		"gpt-image-2":            "gpt-5-3",
+		"gpt-image-2.5":          "auto",
+		"gpt-image-2.5-flare":    "auto",
+		"gpt-image-2.5-sunburst": "auto",
+	}
+	for input, expected := range tests {
+		if actual := openAIImageModel(input); actual != expected {
+			t.Fatalf("openAIImageModel(%q) = %q, want %q", input, actual, expected)
+		}
+	}
+}
+
 func TestOpenAIImageResolvePersistsB64JSONResponse(t *testing.T) {
 	imageDir := t.TempDir()
 	raw := onePixelPNG(t)
@@ -931,6 +945,9 @@ func TestOpenAIImageResolvePersistsB64JSONResponse(t *testing.T) {
 	}
 	if response["b64_json"] == "" || response["url"] != "" {
 		t.Fatalf("unexpected downstream response: %#v", response)
+	}
+	if response["width"] != "1" || response["height"] != "1" {
+		t.Fatalf("expected actual image dimensions in downstream response, got %#v", response)
 	}
 	if !strings.HasPrefix(localURL, "https://images.example.com/v1/files/image?id=") {
 		t.Fatalf("unexpected local URL: %q", localURL)

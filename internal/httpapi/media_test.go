@@ -24,6 +24,19 @@ import (
 	"github.com/auucoder/gptgrok2api-go/internal/provider"
 )
 
+func TestOpenAIImageModelRecognizesGPTImage25Aliases(t *testing.T) {
+	for _, id := range []string{
+		"gpt-image-2",
+		"gpt-image-2.5",
+		"gpt-image-2.5-flare",
+		"gpt-image-2.5-sunburst",
+	} {
+		if !isOpenAIImageModel(id) {
+			t.Fatalf("%s must select the OpenAI image pipeline", id)
+		}
+	}
+}
+
 func TestValidOpenAIImageSizeAcceptsArbitraryDimensions(t *testing.T) {
 	for _, value := range []string{"864x1152", "1800x2400", "123x456"} {
 		if !validOpenAIImageSize(value) {

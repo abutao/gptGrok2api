@@ -468,10 +468,13 @@ func (o *OpenAIImage) Resolve(ctx context.Context, account accounts.Account, ima
 	if strings.TrimSpace(publicBase) != "" {
 		value = strings.TrimRight(publicBase, "/") + value
 	}
+	metadata := imageResponseDimensions(raw)
 	if format == "b64_json" {
-		return map[string]string{"b64_json": image.Base64}, value, nil
+		metadata["b64_json"] = image.Base64
+		return metadata, value, nil
 	}
-	return map[string]string{"url": value}, value, nil
+	metadata["url"] = value
+	return metadata, value, nil
 }
 
 type openAIRequirements struct {
@@ -1715,10 +1718,14 @@ func isOpenAIImageFileID(value string) bool {
 }
 
 func openAIImageModel(model string) string {
-	if strings.EqualFold(strings.TrimSpace(model), "gpt-image-2") {
+	switch strings.ToLower(strings.TrimSpace(model)) {
+	case "gpt-image-2":
 		return "gpt-5-3"
+	case "gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst":
+		return "auto"
+	default:
+		return strings.TrimSpace(model)
 	}
-	return strings.TrimSpace(model)
 }
 
 func buildLegacyRequirementsToken(userAgent string, scripts []string, build string) string {
@@ -1778,6 +1785,17 @@ func imageDimensions(raw []byte) (int, int) {
 		return 1024, 1024
 	}
 	return config.Width, config.Height
+}
+
+func imageResponseDimensions(raw []byte) map[string]string {
+	config, _, err := image.DecodeConfig(bytes.NewReader(raw))
+	if err != nil || config.Width <= 0 || config.Height <= 0 {
+		return map[string]string{}
+	}
+	return map[string]string{
+		"width":  strconv.Itoa(config.Width),
+		"height": strconv.Itoa(config.Height),
+	}
 }
 
 func randomMediaID() string {

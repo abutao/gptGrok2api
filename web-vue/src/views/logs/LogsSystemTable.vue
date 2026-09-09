@@ -1,7 +1,7 @@
 <template>
   <PagePanel flush>
     <TableShell>
-      <table class="w-full min-w-[1240px] table-fixed text-left">
+      <table class="w-full min-w-[1360px] table-fixed text-left">
         <colgroup>
           <col class="w-12" />
           <col class="w-36" />
@@ -11,6 +11,7 @@
           <col class="w-28" />
           <col class="w-24" />
           <col class="w-28" />
+          <col class="w-32" />
           <col />
           <col class="w-36" />
         </colgroup>
@@ -31,6 +32,7 @@
             <th class="py-3 pr-5">调用账号</th>
             <th class="py-3 pr-5">调用耗时</th>
             <th class="py-3 pr-5">状态</th>
+            <th class="py-3 pr-5">实际分辨率</th>
             <th class="py-3 pr-5">图片</th>
             <th class="py-3 pr-5">简述</th>
             <th class="py-3 pr-4 text-right">操作</th>
@@ -38,7 +40,7 @@
         </thead>
         <tbody class="text-sm text-foreground">
           <tr v-if="!isFetching && logs.length === 0">
-            <td colspan="10" class="py-8">
+            <td colspan="11" class="py-8">
               <EmptyState
                 plain
                 :title="logsLoadError ? '日志加载失败' : '暂无日志'"

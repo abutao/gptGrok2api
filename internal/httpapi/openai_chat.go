@@ -175,7 +175,14 @@ func (s *Server) completeOpenAIImageChat(w http.ResponseWriter, r *http.Request,
 	if size == "" {
 		size = "1024x1024"
 	}
-	s.enrichRequestMonitor(r, map[string]any{"size": size, "image_url_parts": len(inputs), "data_url_images": len(inputs)})
+	s.enrichRequestMonitor(r, map[string]any{"request_meta": map[string]any{
+		"size":            size,
+		"quality":         "auto",
+		"response_format": "url",
+		"requested_n":     1,
+		"image_url_parts": len(inputs),
+		"data_url_images": len(inputs),
+	}})
 	s.stageRequestMonitor(r, "image_egress_waiting", 30, map[string]any{"egress_wait_ms": 0})
 	s.stageRequestMonitor(r, "image_getting_account", 35, nil)
 	for attempt := 0; attempt <= s.cfg.ChatMaxRetries; attempt++ {
@@ -216,6 +223,7 @@ func (s *Server) completeOpenAIImageChat(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	parts := make([]string, 0, len(images))
+	resolved := make([]map[string]string, 0, 1)
 	for _, image := range images {
 		item, localURL, resolveErr := s.openAIImage.Resolve(r.Context(), selected, image, "url", s.cfg.ImageDataDir, requestPublicBase(r))
 		if resolveErr != nil {
@@ -224,8 +232,8 @@ func (s *Server) completeOpenAIImageChat(w http.ResponseWriter, r *http.Request,
 			writeError(w, upstreamStatus(resolveErr), resolveErr.Error(), "upstream_error")
 			return
 		}
-		s.recordGeneratedMedia(r.Context(), map[string]string{"url": localURL})
-		s.enrichRequestMonitor(r, map[string]any{"output_images": []map[string]string{{"url": localURL}}})
+		s.recordResolvedImage(r.Context(), r, item, localURL)
+		resolved = append(resolved, item)
 		parts = append(parts, fmt.Sprintf("![image](%s)", item["url"]))
 		// Chat image requests have no image-count parameter and return one
 		// assistant image. Do not persist extra upstream references.
@@ -234,6 +242,8 @@ func (s *Server) completeOpenAIImageChat(w http.ResponseWriter, r *http.Request,
 	s.accountPool.FeedbackImageSuccess(selected)
 	s.accountPool.Release(selectedLease)
 	s.stageRequestMonitor(r, "image_download_done", 95, map[string]any{"total_ms": time.Since(started).Milliseconds()})
+	s.stageRequestMonitor(r, "image_single_done", 99, map[string]any{"total_ms": time.Since(started).Milliseconds()})
+	logImageCompletion(request.Model, size, "auto", "url", resolved)
 	content := strings.Join(parts, "\n")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id": newChatID(), "object": "chat.completion", "created": time.Now().Unix(), "model": request.Model,

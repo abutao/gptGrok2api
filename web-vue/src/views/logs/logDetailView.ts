@@ -159,6 +159,15 @@ function rawMonitorValue(item: SystemLogRow, key: string): string {
   return formatInlineValue(monitorRecord(item)[key])
 }
 
+function imageRequestMeta(item: SystemLogRow): Record<string, unknown> {
+  const value = detailRecord(item).request_meta
+  return value && typeof value === 'object' ? value as Record<string, unknown> : {}
+}
+
+function imageRequestMetaValue(item: SystemLogRow, key: string): string {
+  return formatInlineValue(imageRequestMeta(item)[key])
+}
+
 function isErrorStatusCode(value: string): boolean {
   const statusCode = Number(cleanString(value))
   return Number.isFinite(statusCode) && statusCode >= 400
@@ -450,6 +459,12 @@ export function buildPrimaryDetailFields(item: SystemLogRow | null): DetailField
     { label: '请求 ID', value: rawDetailValue(item, 'call_id') || item.id, copyable: true },
     { label: '接口', value: item.endpoint, copyable: true },
     { label: '模型', value: item.model, copyable: true },
+    { label: '请求尺寸', value: imageRequestMetaValue(item, 'size') },
+    { label: '实际分辨率', value: item.imageResolutions.join(' / ') },
+    { label: '请求质量', value: imageRequestMetaValue(item, 'quality') },
+    { label: '返回格式', value: imageRequestMetaValue(item, 'response_format') },
+    { label: '请求张数', value: imageRequestMetaValue(item, 'requested_n') },
+    { label: '出图张数', value: item.imageResolutions.length ? String(item.imageResolutions.length) : '' },
     { label: '账号', value: item.accountEmail, copyable: true },
     { label: 'OAuth 账号 ID', value: item.accountId, copyable: true },
     { label: '密钥', value: maskKeyLabel([item.keyName, item.keyId].filter(Boolean).join(' / ')) },

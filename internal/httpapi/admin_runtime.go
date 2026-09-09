@@ -1012,7 +1012,7 @@ func (s *Server) appendCallLog(record monitorRecord, statusCode int, requestShap
 		detail["key_id"] = record.KeyID
 	}
 	if shape, ok := requestShape.(map[string]any); ok {
-		detail["request_meta"] = map[string]any{"size": shape["size"], "image_url_parts": shape["image_url_parts"], "data_url_images": shape["data_url_images"], "requested_n": shape["requested_n"]}
+		detail["request_meta"] = imageRequestMeta(shape)
 	}
 	if record.RequestMeta != nil {
 		detail["request_meta"] = record.RequestMeta
@@ -1029,13 +1029,16 @@ func (s *Server) appendCallLog(record monitorRecord, statusCode int, requestShap
 		detail["raw_error"] = errorText
 		detail["upstream_error"] = errorText
 	}
-	outputs := responseImageOutputs(responseBody)
-	if len(outputs) == 0 {
-		outputs = record.OutputImages
-	}
+	outputs := mergeImageOutputs(responseImageOutputs(responseBody), record.OutputImages)
 	if len(outputs) > 0 {
 		detail["output_images"] = outputs
 		detail["image_urls"] = outputs
+	}
+	resultImages := responseImageResultMetadata(responseBody)
+	resultImages = mergeImageDimensions(resultImages, imageOutputDimensions(outputs))
+	if len(resultImages) > 0 {
+		detail["result_images"] = resultImages
+		detail["result_data_count"] = len(resultImages)
 	}
 	entry := map[string]any{
 		"id":      record.CallID,
@@ -1060,6 +1063,16 @@ func (s *Server) appendCallLog(record monitorRecord, statusCode int, requestShap
 	}
 	defer file.Close()
 	_, _ = file.Write(append(raw, '\n'))
+}
+
+func imageRequestMeta(shape map[string]any) map[string]any {
+	meta := map[string]any{}
+	for _, key := range []string{"size", "quality", "response_format", "requested_n", "image_url_parts", "data_url_images"} {
+		if value, ok := shape[key]; ok && value != nil && stringValue(value) != "" {
+			meta[key] = value
+		}
+	}
+	return meta
 }
 
 func responseImageOutputs(raw []byte) []map[string]string {
@@ -1093,9 +1106,105 @@ func monitorImageOutputs(value any) []map[string]string {
 	return outputs
 }
 
+func mergeImageOutputs(groups ...[]map[string]string) []map[string]string {
+	merged := make([]map[string]string, 0)
+	byURL := map[string]int{}
+	for _, group := range groups {
+		for _, item := range group {
+			url := strings.TrimSpace(item["url"])
+			if url == "" {
+				continue
+			}
+			if index, ok := byURL[url]; ok {
+				for key, value := range item {
+					if strings.TrimSpace(merged[index][key]) == "" && strings.TrimSpace(value) != "" {
+						merged[index][key] = value
+					}
+				}
+				continue
+			}
+			copy := map[string]string{}
+			for key, value := range item {
+				copy[key] = value
+			}
+			byURL[url] = len(merged)
+			merged = append(merged, copy)
+		}
+	}
+	return merged
+}
+
+func imageOutputDimensions(outputs []map[string]string) []map[string]string {
+	images := make([]map[string]string, 0, len(outputs))
+	for _, output := range outputs {
+		images = append(images, imageDimensionsFromValues(output["width"], output["height"]))
+	}
+	return images
+}
+
+func responseImageResultMetadata(raw []byte) []map[string]string {
+	var value any
+	if json.Unmarshal(raw, &value) != nil {
+		return nil
+	}
+	images := []map[string]string{}
+	var walk func(any)
+	walk = func(item any) {
+		switch typed := item.(type) {
+		case map[string]any:
+			if stringValue(typed["url"]) != "" || stringValue(typed["b64_json"]) != "" {
+				images = append(images, imageDimensionsFromValues(stringValue(typed["width"]), stringValue(typed["height"])))
+			}
+			for key, nested := range typed {
+				if key != "b64_json" && key != "url" {
+					walk(nested)
+				}
+			}
+		case []any:
+			for _, nested := range typed {
+				walk(nested)
+			}
+		}
+	}
+	walk(value)
+	return images
+}
+
+func mergeImageDimensions(primary, fallback []map[string]string) []map[string]string {
+	if len(primary) == 0 {
+		return fallback
+	}
+	merged := make([]map[string]string, 0, maxInt(len(primary), len(fallback)))
+	for index := 0; index < len(primary); index++ {
+		image := map[string]string{"width": primary[index]["width"], "height": primary[index]["height"]}
+		if index < len(fallback) {
+			if image["width"] == "" {
+				image["width"] = fallback[index]["width"]
+			}
+			if image["height"] == "" {
+				image["height"] = fallback[index]["height"]
+			}
+		}
+		merged = append(merged, image)
+	}
+	if len(fallback) > len(primary) {
+		return append(merged, fallback[len(primary):]...)
+	}
+	return merged
+}
+
+func imageDimensionsFromValues(width, height string) map[string]string {
+	image := map[string]string{}
+	if intValue(width) > 0 && intValue(height) > 0 {
+		image["width"] = width
+		image["height"] = height
+	}
+	return image
+}
+
 func responseImageOutputsFromValue(value any) []map[string]string {
 	out := []map[string]string{}
-	appendURL := func(value string) {
+	appendURL := func(value string, fields map[string]any) {
 		u := strings.TrimSpace(value)
 		if u == "" {
 			return
@@ -1108,7 +1217,11 @@ func responseImageOutputsFromValue(value any) []map[string]string {
 		if id := parsed.Query().Get("id"); id != "" {
 			name = id
 		}
-		out = append(out, map[string]string{"url": u, "filename": name})
+		output := map[string]string{"url": u, "filename": name}
+		for key, value := range imageDimensionsFromValues(stringValue(fields["width"]), stringValue(fields["height"])) {
+			output[key] = value
+		}
+		out = append(out, output)
 	}
 	var walk func(any)
 	walk = func(v any) {
@@ -1116,7 +1229,7 @@ func responseImageOutputsFromValue(value any) []map[string]string {
 		case map[string]any:
 			for key, item := range x {
 				if key == "url" {
-					appendURL(stringValue(item))
+					appendURL(stringValue(item), x)
 				} else {
 					walk(item)
 				}
@@ -1135,7 +1248,7 @@ func responseImageOutputsFromValue(value any) []map[string]string {
 					} else {
 						u = strings.Trim(u, "![]()")
 					}
-					appendURL(u)
+					appendURL(u, nil)
 				}
 			}
 		}
