@@ -38,9 +38,7 @@ export const modelColorPalette = [
 export const modelColors: Record<string, string> = {
   auto: '#64748B',
   'gpt-5.5': modelColorPalette[0],
-  'gpt-5-5': modelColorPalette[0],
   'gpt-5.6': modelColorPalette[1],
-  'gpt-5-6': modelColorPalette[1],
   'gpt-5-5-thinking': modelColorPalette[9],
   'gpt-5.5-mini': modelColorPalette[6],
   'gpt-5': modelColorPalette[3],

@@ -72,9 +72,6 @@ func isOpenAIChatModel(id string) bool {
 		"gpt-5-3-mini",
 		"gpt-5.5",
 		"gpt-5.6",
-		// Keep the older hyphenated IDs working for existing clients.
-		"gpt-5-5",
-		"gpt-5-6",
 		"gpt-5-6-sol",
 		"gpt-5-6-terra",
 		"gpt-5-6-luna",

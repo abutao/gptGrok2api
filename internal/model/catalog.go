@@ -82,22 +82,10 @@ func Catalog() []Spec {
 }
 
 func Find(items []Spec, id string) (Spec, bool) {
-	id = canonicalCatalogID(id)
 	for _, item := range items {
 		if item.Enabled && item.ID == id {
 			return item, true
 		}
 	}
 	return Spec{}, false
-}
-
-func canonicalCatalogID(id string) string {
-	switch id {
-	case "gpt-5-5":
-		return "gpt-5.5"
-	case "gpt-5-6":
-		return "gpt-5.6"
-	default:
-		return id
-	}
 }

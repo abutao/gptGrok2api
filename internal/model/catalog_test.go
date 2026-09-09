@@ -10,31 +10,11 @@ func TestCatalogContainsCoreModels(t *testing.T) {
 		}
 	}
 	for _, id := range []string{"gpt-5-5", "gpt-5-6"} {
-		listed := false
-		for _, item := range items {
-			if item.ID == id {
-				listed = true
-				break
-			}
+		if _, ok := Find(items, id); ok {
+			t.Fatalf("legacy model %q must not be listed", id)
 		}
-		if listed {
-			t.Fatalf("legacy model %q must not be publicly listed", id)
-		}
-		if _, ok := ResolveChat(id); !ok {
-			t.Fatalf("legacy model %q must remain callable", id)
-		}
-	}
-}
-
-func TestFindCanonicalizesLegacyChatModelIDs(t *testing.T) {
-	items := Catalog()
-	for legacyID, publicID := range map[string]string{
-		"gpt-5-5": "gpt-5.5",
-		"gpt-5-6": "gpt-5.6",
-	} {
-		item, ok := Find(items, legacyID)
-		if !ok || item.ID != publicID {
-			t.Fatalf("legacy model %q resolved to %#v", legacyID, item)
+		if _, ok := ResolveChat(id); ok {
+			t.Fatalf("legacy model %q must not be callable", id)
 		}
 	}
 }

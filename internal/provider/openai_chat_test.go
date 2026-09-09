@@ -32,13 +32,6 @@ func TestOpenAIChatPayloadUsesRawMessageText(t *testing.T) {
 	}
 }
 
-func TestOpenAIChatPayloadCanonicalizesLegacyModelID(t *testing.T) {
-	payload := openAIChatPayload(protocol.ChatRequest{Model: "gpt-5-6"})
-	if payload["model"] != "gpt-5.6" {
-		t.Fatalf("legacy model was not canonicalized: %#v", payload["model"])
-	}
-}
-
 func TestOpenAIChatStateReturnsSSEDetailAsError(t *testing.T) {
 	state := &openAIChatState{}
 	_, err := state.event(map[string]any{"detail": "Invalid conversation body"})
