@@ -61,6 +61,17 @@ func (s *Server) messages(w http.ResponseWriter, r *http.Request) {
 	if request.Stream {
 		chat.Stream = true
 	}
+	route, routeOK := model.ResolveChat(request.Model)
+	if routeOK && route.OpenAI && !route.Image {
+		recorder := &responseCapture{header: make(http.Header)}
+		s.completeOpenAIChat(recorder, r, chat, route)
+		if request.Stream {
+			s.writeAnthropicStream(w, recorder, request.Model)
+		} else {
+			s.writeAnthropicResponse(w, recorder, request.Model)
+		}
+		return
+	}
 	if spec.Capability&model.ConsoleChat != 0 {
 		s.consoleChatCompletions(w, r, chat)
 		return

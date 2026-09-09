@@ -40,8 +40,8 @@ func Catalog() []Spec {
 		{"gpt-5-2", "GPT-5.2", "openai", created, Chat, true},
 		{"gpt-5-3", "GPT-5.3", "openai", created, Chat, true},
 		{"gpt-5-3-mini", "GPT-5.3 Mini", "openai", created, Chat, true},
-		{"gpt-5-5", "GPT-5.5", "openai", created, Chat, true},
-		{"gpt-5-6", "GPT-5.6", "openai", created, Chat, true},
+		{"gpt-5.5", "GPT-5.5", "openai", created, Chat, true},
+		{"gpt-5.6", "GPT-5.6", "openai", created, Chat, true},
 		{"gpt-5-6-sol", "GPT-5.6 Sol", "openai", created, Chat, true},
 		{"gpt-5-6-terra", "GPT-5.6 Terra", "openai", created, Chat, true},
 		{"gpt-5-6-luna", "GPT-5.6 Luna", "openai", created, Chat, true},
@@ -82,10 +82,22 @@ func Catalog() []Spec {
 }
 
 func Find(items []Spec, id string) (Spec, bool) {
+	id = canonicalCatalogID(id)
 	for _, item := range items {
 		if item.Enabled && item.ID == id {
 			return item, true
 		}
 	}
 	return Spec{}, false
+}
+
+func canonicalCatalogID(id string) string {
+	switch id {
+	case "gpt-5-5":
+		return "gpt-5.5"
+	case "gpt-5-6":
+		return "gpt-5.6"
+	default:
+		return id
+	}
 }

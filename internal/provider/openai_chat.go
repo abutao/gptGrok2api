@@ -158,6 +158,7 @@ func openAIChatPayload(request protocol.ChatRequest) map[string]any {
 	if modelID == "auto" || modelID == "" {
 		modelID = "auto"
 	}
+	modelID = canonicalOpenAIChatModel(modelID)
 	payload := map[string]any{
 		"action":                        "next",
 		"messages":                      messages,
@@ -184,6 +185,17 @@ func openAIChatPayload(request protocol.ChatRequest) map[string]any {
 		payload["thinking_effort"] = request.ReasoningEffort
 	}
 	return payload
+}
+
+func canonicalOpenAIChatModel(modelID string) string {
+	switch modelID {
+	case "gpt-5-5":
+		return "gpt-5.5"
+	case "gpt-5-6":
+		return "gpt-5.6"
+	default:
+		return modelID
+	}
 }
 
 func openAIMessageText(value any) string {

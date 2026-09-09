@@ -9,7 +9,7 @@ import (
 
 func TestOpenAIChatPayloadUsesRawMessageText(t *testing.T) {
 	payload := openAIChatPayload(protocol.ChatRequest{
-		Model: "gpt-5-6",
+		Model: "gpt-5.6",
 		Messages: []protocol.Message{
 			{Role: "user", Content: "请回复Go测试成功"},
 		},
@@ -26,6 +26,16 @@ func TestOpenAIChatPayloadUsesRawMessageText(t *testing.T) {
 	}
 	if strings.Contains(parts[0].(string), "[user]") {
 		t.Fatalf("message contains protocol decoration: %q", parts[0])
+	}
+	if payload["model"] != "gpt-5.6" {
+		t.Fatalf("unexpected upstream model: %#v", payload["model"])
+	}
+}
+
+func TestOpenAIChatPayloadCanonicalizesLegacyModelID(t *testing.T) {
+	payload := openAIChatPayload(protocol.ChatRequest{Model: "gpt-5-6"})
+	if payload["model"] != "gpt-5.6" {
+		t.Fatalf("legacy model was not canonicalized: %#v", payload["model"])
 	}
 }
 
