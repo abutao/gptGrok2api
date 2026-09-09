@@ -254,7 +254,7 @@ func (s *Server) imageGenerations(w http.ResponseWriter, r *http.Request) {
 		request.Size = provider.NormalizeOpenAIImageSize(request.Size)
 	}
 	if request.ResponseFormat == "" {
-		request.ResponseFormat = openAIImageResponseFormat("")
+		request.ResponseFormat = imageGenerationResponseFormat(request.Model, "")
 	}
 	if request.Quality == "" {
 		request.Quality = "auto"
@@ -1195,6 +1195,17 @@ func openAIImageResponseFormat(value string) string {
 		return "b64_json"
 	}
 	return format
+}
+
+func imageGenerationResponseFormat(modelName, value string) string {
+	format := strings.ToLower(strings.TrimSpace(value))
+	if format != "" {
+		return format
+	}
+	if isOpenAIImageModel(modelName) {
+		return "b64_json"
+	}
+	return "url"
 }
 
 func (s *Server) imageFile(w http.ResponseWriter, r *http.Request) {

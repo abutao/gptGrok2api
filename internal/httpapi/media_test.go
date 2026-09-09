@@ -191,6 +191,18 @@ func TestOpenAIImageResponseFormatDefaultsToB64JSON(t *testing.T) {
 	}
 }
 
+func TestImageGenerationResponseFormatUsesOpenAIAndGrokDefaults(t *testing.T) {
+	if got := imageGenerationResponseFormat("gpt-image-2", ""); got != "b64_json" {
+		t.Fatalf("expected OpenAI image default b64_json, got %q", got)
+	}
+	if got := imageGenerationResponseFormat("grok-imagine-image", ""); got != "url" {
+		t.Fatalf("expected Grok image default url, got %q", got)
+	}
+	if got := imageGenerationResponseFormat("gpt-image-2", "url"); got != "url" {
+		t.Fatalf("expected explicit url, got %q", got)
+	}
+}
+
 func TestUpstreamStatusUnwrapsWrappedErrors(t *testing.T) {
 	err := fmt.Errorf("do request failed /v1/chat/completions: %w", &protocol.UpstreamError{Status: http.StatusTooManyRequests, Message: "throttled"})
 	if status := upstreamStatus(err); status != http.StatusTooManyRequests {
