@@ -179,6 +179,18 @@ func TestImageEditResponseFormatHonorsRequestedFormat(t *testing.T) {
 	}
 }
 
+func TestOpenAIImageResponseFormatDefaultsToB64JSON(t *testing.T) {
+	if got := openAIImageResponseFormat(""); got != "b64_json" {
+		t.Fatalf("expected empty response_format to default to b64_json, got %q", got)
+	}
+	if got := openAIImageResponseFormat("url"); got != "url" {
+		t.Fatalf("expected explicit url response_format, got %q", got)
+	}
+	if got := openAIImageResponseFormat("b64_json"); got != "b64_json" {
+		t.Fatalf("expected explicit b64_json response_format, got %q", got)
+	}
+}
+
 func TestUpstreamStatusUnwrapsWrappedErrors(t *testing.T) {
 	err := fmt.Errorf("do request failed /v1/chat/completions: %w", &protocol.UpstreamError{Status: http.StatusTooManyRequests, Message: "throttled"})
 	if status := upstreamStatus(err); status != http.StatusTooManyRequests {
